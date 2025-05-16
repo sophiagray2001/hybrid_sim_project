@@ -1,0 +1,13 @@
+name: hybrid_inheritance_sim
+channels:
+  - defaults
+  - https://repo.anaconda.com/pkgs/main
+  - https://repo.anaconda.com/pkgs/r
+  - https://repo.anaconda.com/pkgs/msys2
+dependencies:
+  - python=3.12
+  - numpy
+  - pandas
+  - matplotlib
+  - jupyter
+prefix: C:\Users\sophi\anaconda3\envs\hybrid_inheritance_sim
