@@ -4,3 +4,24 @@ __pycache__/
 *.pkl 
 *.csv 
 .DS_Store 
+# Ignore old/unused Jupyter notebooks
+Hybrid_F2_sim.ipynb
+Hybrid_inheritance_sim.ipynb
+Hybrid_sim_F3_BC.ipynb
+Hybrid_sim_generalised.ipynb
+Hybrid_sim_v2.ipynb
+Hybrid_sim_v3.ipynb
+Hybrid_sim_v4.ipynb
+Hybrid_sim_v5.ipynb
+Hybrid_sim_v6.ipynb
+automated_hybrid_sim.ipynb
+full_sim.ipynb
+full_sim_v2.ipynb
+hybrid_sim_automated.ipynb
+hybrid_sim_working_progress.ipynb
+
+# Ignore old plot files
+mean_hi_het_plot.png
+
+# Ignore Conda-related project directories (if you also want this)
+anaconda_projects/
