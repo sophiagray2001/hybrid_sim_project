@@ -86,8 +86,6 @@ python-dateutil
 python-json-logger
 python-ternary==1.0.8
 pytz
-pywin32==308
-pywinpty
 PyYAML
 pyzmq
 qtconsole
