@@ -432,12 +432,12 @@ class RecombinationSimulator:
 
 # HELPER FUNCTIONS
 
-def create_default_markers(n_markers, n_chromosomes, pA_freq, pB_freq, md_prob, map_generate=False):
+def create_default_markers(args, n_markers, n_chromosomes, pA_freq, pB_freq, md_prob):
     """
     Creates a standardised set of marker data for simulation.
     """
     known_markers_data = []
-    marker_counter = 0
+    marker_counter = 1
 
     if isinstance(pA_freq, (float, int)):
         pA_freq = [pA_freq] * n_markers
@@ -453,8 +453,8 @@ def create_default_markers(n_markers, n_chromosomes, pA_freq, pB_freq, md_prob, 
         for i in range(n_markers // n_chromosomes):
             marker_id = f"M{marker_counter+1}"
             
-            # Position markers uniformly or randomly
-            if map_generate:
+            # Position markers uniformly or randomly based on args.map_generate
+            if args.map_generate:
                 position_unit = random.uniform(0.0, 100.0)
             else:
                 position_unit = (i + 1) * spacing_cm
@@ -472,31 +472,57 @@ def create_default_markers(n_markers, n_chromosomes, pA_freq, pB_freq, md_prob, 
             
     return known_markers_data
 
-def read_allele_freq_from_csv(file_path, map_generate=False):
+def read_allele_freq_from_csv(file_path, args):
     """
-    Reads marker data from a CSV file.
+    Reads marker data from a CSV file, adding a uniform or random map if not present.
     """
-    df = pd.read_csv(file_path)
-    
+    try:
+        df = pd.read_csv(file_path, dtype={'allele_freq_A': float, 'allele_freq_B': float})
+    except ValueError as e:
+        print(f"Error: Non-numeric data found in allele frequency columns. Please check your CSV file.")
+        print(f"Original error: {e}")
+        raise
+
+    # REQUIRED columns check
     required_cols = ['marker_id', 'allele_freq_A', 'allele_freq_B']
     if not all(col in df.columns for col in required_cols):
         raise ValueError(f"CSV file must contain the following columns: {required_cols}")
-        
-    # Handle optional columns
+
+    # 'chromosome' check
     if 'chromosome' not in df.columns:
-        df['chromosome'] = 'Chr1'
-        print("Warning: 'chromosome' column not found. All markers assigned to 'Chr1'.")
-    if 'position_unit' not in df.columns or map_generate:
-        # Generate random positions if column is missing or --generate flag is used
-        df['position_unit'] = [random.uniform(0.0, 100.0) for _ in range(len(df))]
-        if map_generate:
+        # Use --num_chrs flag if provided, otherwise default to Chr1
+        num_markers = len(df)
+        num_chrs = args.num_chrs if args.num_chrs else 1
+        markers_per_chr = num_markers // num_chrs
+        
+        # Assign markers to chromosomes based on num_chrs
+        chrom_list = []
+        for i in range(num_chrs):
+            chrom_list.extend([f'Chr{i+1}'] * markers_per_chr)
+        
+        # Handle any remaining markers
+        chrom_list.extend([f'Chr{num_chrs}'] * (num_markers % num_chrs))
+
+        df['chromosome'] = chrom_list
+        print(f"Warning: 'chromosome' column not found. Assigning markers to {num_chrs} chromosomes.")
+
+    # OPTIONAL 'position_unit' check
+    if 'position_unit' not in df.columns:
+        num_markers = len(df)
+        if args.map_generate:
+            # Case 1: --generate is specified and position is missing -> generate random positions
+            df['position_unit'] = [random.uniform(0.0, 100.0) for _ in range(num_markers)]
             print("Generating random marker positions due to '--generate' flag.")
         else:
-            print("Warning: 'position_unit' column not found. Generating random positions.")
+            # Case 2: --generate is NOT specified and position is missing -> generate uniform positions
+            df['position_unit'] = np.linspace(0.0, 100.0, num_markers)
+            print("Warning: 'position_unit' column not found. Generating uniform positions.")
+    
+    # OPTIONAL 'missing_data_prob' check
     if 'missing_data_prob' not in df.columns:
         df['missing_data_prob'] = 0.0
         print("Warning: 'missing_data_prob' column not found. Assuming 0 missing data.")
-        
+
     return df.to_dict('records')
 
 def build_hybrid_generations(base_name, start_gen, num_hybrid_generations):
@@ -997,7 +1023,6 @@ def handle_outputs(args, populations_dict, hi_het_data, all_locus_data, ancestry
     hi_het_data.update(initial_hi_het_data)
 
     # Construct the final output directory path by appending 'results'
-    # This handles both the default and user-specified paths
     output_dir = os.path.join(args.output_dir, "results")
     
     # Create the directory if it doesn't exist
@@ -1007,7 +1032,7 @@ def handle_outputs(args, populations_dict, hi_het_data, all_locus_data, ancestry
     # Convert results to DataFrames
     all_locus_genotype_df = pd.DataFrame(all_locus_data)
 
-    # Always output locus and HI/HET data to CSV as the new default
+    # Always output locus and HI/HET data to CSV
     all_locus_genotype_df.to_csv(f"{output_path_prefix}_locus_genotype_data.csv", index=False)
     print(f"Genotype data saved to: {output_path_prefix}_locus_genotype_data.csv")
 
@@ -1021,11 +1046,34 @@ def handle_outputs(args, populations_dict, hi_het_data, all_locus_data, ancestry
 
     # Output handling based on specific tracking flags
 
-    # Ancestry/Pedigree CSV is now linked directly to the -pr flag
+    # Pedigree CSV is linked directly to the -pr flag
     if args.pedigree_recording:
         ancestry_df = pd.DataFrame(ancestry_data)
-        ancestry_df.to_csv(f"{output_path_prefix}_ancestry_pedigree.csv", index=False)
-        print(f"Ancestry pedigree saved to: {output_path_prefix}_ancestry_pedigree.csv")
+        ancestry_df.to_csv(f"{output_path_prefix}_pedigree.csv", index=False)
+        print(f"Pedigree records saved to: {output_path_prefix}_pedigree.csv")
+
+        # Plotting logic is now nested here to use the in-memory ancestry_df
+        if args.pedigree_visual:
+            try:
+                # Use isinstance() to check if a string ID was provided
+                if isinstance(args.pedigree_visual, str):
+                    start_id = args.pedigree_visual
+                else:
+                    start_id = ancestry_df['offspring_id'].iloc[-1]
+                
+                output_plot_path = f"{output_path_prefix}_pedigree_visual.png"
+                plot_pedigree_visual(ancestry_df, start_id, output_plot_path)
+
+            except Exception as e:
+                print(f"An error occurred while plotting the ancestry tree: {e}")
+        
+        # This check is also nested to use the in-memory ancestry_df
+        if args.full_pedigree_visual:
+            try:
+                output_plot_path = f"{output_path_prefix}_full_pedigree.png"
+                plot_full_pedigree(ancestry_df, output_plot_path)
+            except Exception as e:
+                print(f"An error occurred while plotting the full ancestry tree: {e}")
 
     # Blocks CSV is now linked directly to the -tb flag
     if args.track_blocks:
@@ -1044,34 +1092,6 @@ def handle_outputs(args, populations_dict, hi_het_data, all_locus_data, ancestry
         plot_triangle_hi_het(populations_dict, hi_het_data, output_path_prefix)
         print(f"Triangle plot saved to: {output_path_prefix}_triangle_plot.png")
 
-    # Pedigree Visualisation is now linked directly to the -pv flag
-    if args.pedigree_visual:
-        try:
-            ancestry_df = pd.read_csv(f"{output_path_prefix}_ancestry_pedigree.csv")
-            
-            # Use isinstance() to check if a string ID was provided
-            if isinstance(args.pedigree_visual, str):
-                start_id = args.pedigree_visual
-            else:
-                start_id = ancestry_df['offspring_id'].iloc[-1]
-                
-            output_plot_path = f"{output_path_prefix}_pedigree_visual.png"
-            plot_pedigree_visual(ancestry_df, start_id, output_plot_path)
-
-        except FileNotFoundError:
-            print("Error: Ancestry pedigree data not found. Ensure '--pedigree_recording' is specified. No plot will be generated.")
-        except Exception as e:
-            print(f"An error occurred while plotting the ancestry tree: {e}")
-    
-    # Add a check for a new command-line flag
-    if args.full_pedigree_visual and args.pedigree_recording:
-        try:
-            ancestry_df = pd.read_csv(f"{output_path_prefix}_ancestry_pedigree.csv")
-            output_plot_path = f"{output_path_prefix}_full_pedigree.png"
-            plot_full_pedigree(ancestry_df, output_plot_path)
-        except FileNotFoundError:
-            print("Error: Ancestry pedigree data not found. Ensure '--pedigree_recording' is specified.")
-
     print("\nScript End.")
 
 # MAIN RUN AND OUTPUTS
@@ -1085,77 +1105,76 @@ if __name__ == "__main__":
     # The simulation mode is now determined automatically by the -f flag.
     parser.add_argument("-f", "--file", type=str, default=None,
                         help="""Path to a marker data CSV file.
-If a file is specified, the simulation runs in empirical mode.
-Otherwise, the simulation defaults to simple mode with internally generated data.""")
+If a file is specified, the simulation runs using the input file data.
+Otherwise, the simulation defaults with internally generated data.""")
 
     # Parameters for both modes
     general_params = parser.add_argument_group('General Simulation Parameters')
     general_params.add_argument("-npa", "--num_pop_a", type=int, default=10, help="Number of individuals in the starting Population A (default: 10).")
     general_params.add_argument("-npb", "--num_pop_b", type=int, default=10, help="Number of individuals in the starting Population B (default: 10).")
     general_params.add_argument("-no", "--num_offspring", type=str, default='{"1": 1.0}',
-                                 help="""A probability distribution for number of offspring per mating pair.
+                                help="""A probability distribution for number of offspring per mating pair.
 Input as a string dictionary, e.g., '{"0":0.2, "1": 0.7, "2": 0.1}'. (default: '{"1": 1.0}')""")
     general_params.add_argument("-HG", "--hybrid_generations", type=int, default=1, help="Number of hybrid (HG) generations to simulate (default: 1).")
     general_params.add_argument("-BCA", "--backcross_A", type=int, default=0, help="Number of backcross generations to Population A (default: 0).")
     general_params.add_argument("-BCB", "--backcross_B", type=int, default=0, help="Number of backcross generations to Population B (default: 0).")
     general_params.add_argument("-cd", "--crossover_dist", type=str, default='{"1": 1.0}',
-                                 help="""A probability distribution for crossovers per chromosome.
+                                help="""A probability distribution for crossovers per chromosome.
 Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0}')""")
     general_params.add_argument("--seed", type=int, default=None, help="A seed for the random number generator (default: None).")
 
-    # Parameters for Simple Mode
-    simple_group = parser.add_argument_group('Simple Mode Parameters')
+    # Parameters for internal defaults
+    simple_group = parser.add_argument_group('Internal Default Parameters')
     simple_group.add_argument("-nm", "--num_marker", type=int, default=1000, help="Number of markers to simulate per chromosome (default: 1000).")
-    simple_group.add_argument("-nc", "--num_chrs", type=int, default=10, help="Number of chromosomes to simulate (default: 10).")
+    simple_group.add_argument("-nc", "--num_chrs", type=int, default=1, help="Number of chromosomes to simulate (default: 1).")
     simple_group.add_argument("-afA", "--allele_freq_popA", type=str, default="1.0", help="Allele freq. of allele '0' for Pop A. Can be single value or comma-separated list (default: '1.0').")
     simple_group.add_argument("-afB", "--allele_freq_popB", type=str, default="0.0", help="Allele freq. of allele '0' for Pop B (default: '0.0').")
     simple_group.add_argument("-md", "--missing_data", type=str, default="0.0", help="Proportion of missing data per marker (default: '0.0').")
-    
+
     # Tracking and Output
     tracking_group = parser.add_argument_group('Tracking and Output Options')
-    tracking_group.add_argument("-pr", "--pedigree_recording", action="store_true", 
+    tracking_group.add_argument("-pr", "--pedigree_recording", action="store_true",
                                 help="Store and output the parental IDs for each individual. This also produces an ancestry CSV file.")
     tracking_group.add_argument("-pv", "--pedigree_visual", nargs='?', const=True, default=False, help="Generate a pedigree tree visualisation. Provide an individual ID to start from a specific point. Requires pedigree recording flag")
     tracking_group.add_argument('-fp', '--full_pedigree_visual', action='store_true', help="Generate a pedigree tree visualisation for the entire simulation.")
-    tracking_group.add_argument("-tb", "--track_blocks", action="store_true", 
+    tracking_group.add_argument("-tb", "--track_blocks", action="store_true",
                                 help="Tracks and outputs blocks of continuous ancestry on chromosomes. This also produces a blocks CSV file.")
-    tracking_group.add_argument("-tj", "--track_junctions", action="store_true", 
+    tracking_group.add_argument("-tj", "--track_junctions", action="store_true",
                                 help="Tracks and outputs the positions of ancestry junctions (crossovers). This also produces a junctions CSV file.")
     tracking_group.add_argument("-gmap", "--map_generate", action="store_true",
-                                help="""Randomly assigns marker positions. In simple mode, this overrides uniform placement.
-In empirical mode, this is used only if 'position_unit' is not in the input file.""")
-    tracking_group.add_argument("-tp", "--triangle_plot", action="store_true", 
+                                help="""Randomly assigns marker positions. When using internal default parameters, this overrides uniform placement. This is used only if 'position_unit' is not in the input file.""")
+    tracking_group.add_argument("-tp", "--triangle_plot", action="store_true",
                                 help="Generates a triangle plot of allele frequencies.")
 
     # Output Arguments
     tracking_argument_group = parser.add_argument_group('Output Arguments')
-    tracking_argument_group.add_argument("-on", "--output_name", type=str, default="results", 
+    tracking_argument_group.add_argument("-on", "--output_name", type=str, default="results",
                                          help="Base name for all output files (default: 'results').")
-    tracking_argument_group.add_argument("-od", "--output_dir", type=str, default="simulation_outputs", 
+    tracking_argument_group.add_argument("-od", "--output_dir", type=str, default="simulation_outputs",
                                          help="Directory to save output files (default: 'simulation_outputs').")
 
     args = parser.parse_args()
 
     # Determine crossover mode and distribution
     try:
-            crossover_dist = _parse_crossover_distribution(args.crossover_dist)
+        crossover_dist = _parse_crossover_distribution(args.crossover_dist)
         # Add the number_offspring parsing right here
-            number_offspring = _parse_number_offspringribution(args.num_offspring)
+        number_offspring = _parse_number_offspringribution(args.num_offspring)
 
-            print(f"Crossover distribution set to: {crossover_dist}")
-            print(f"Offspring distribution set to: {number_offspring}")
+        print(f"Crossover distribution set to: {crossover_dist}")
+        print(f"Offspring distribution set to: {number_offspring}")
 
     except ValueError as e:
-            print(f"Error parsing distributions: {e}")
-            exit(1)
+        print(f"Error parsing distributions: {e}")
+        exit(1)
 
     # Set the random seed
     if args.seed is not None:
-            print(f"Setting random seed to: {args.seed}")
-            random.seed(args.seed)
-            np.random.seed(args.seed)
+        print(f"Setting random seed to: {args.seed}")
+        random.seed(args.seed)
+        np.random.seed(args.seed)
     else:
-            print("No seed provided. Using a random seed for this run")
+        print("No seed provided. Using a random seed for this run")
 
     # Determine which mode to run in and get marker data
     known_markers_data = []
@@ -1164,21 +1183,22 @@ In empirical mode, this is used only if 'position_unit' is not in the input file
     if args.file:
         print(f"\nRunning with input file: {args.file}.")
         try:
-            known_markers_data = read_allele_freq_from_csv(args.file, args.map_generate)
+            known_markers_data = read_allele_freq_from_csv(args.file, args)
         except (FileNotFoundError, ValueError) as e:
             print(f"Error reading input file: {e}")
-            exit()
+            exit(1)
     else:
-        print("\nRunning in with given parameters.")
+        print("\nRunning with given parameters.")
         try:
             pA_freqs = parse_list_or_value(args.allele_freq_popA, args.num_marker)
             pB_freqs = parse_list_or_value(args.allele_freq_popB, args.num_marker)
             md_probs = parse_list_or_value(args.missing_data, args.num_marker)
         except ValueError as e:
             print(f"Error with parameters: {e}")
-            exit()
+            exit(1)
 
         known_markers_data = create_default_markers(
+            args=args,
             n_markers=args.num_marker,
             n_chromosomes=args.num_chrs,
             pA_freq=pA_freqs,
@@ -1186,70 +1206,70 @@ In empirical mode, this is used only if 'position_unit' is not in the input file
             md_prob=md_probs,
             map_generate=args.map_generate
         )
-        
-        # Start the recombination simulator
-        recomb_simulator = RecombinationSimulator(known_markers_data=known_markers_data)
 
-        # Create the ancestral populations
-        print("\nCreating initial populations (P_A and P_B)...")
-        pop_A = create_initial_populations_integrated(recomb_simulator, args.num_pop_a, known_markers_data, 'P_A')
-        pop_B = create_initial_populations_integrated(recomb_simulator, args.num_pop_b, known_markers_data, 'P_B')
+    # Start the recombination simulator
+    recomb_simulator = RecombinationSimulator(known_markers_data=known_markers_data)
 
-        # Collect initial founder data
-        initial_locus_data = []
-        initial_hi_het_data = {}
+    # Create the ancestral populations
+    print("\nCreating initial populations (P_A and P_B)...")
+    pop_A = create_initial_populations_integrated(recomb_simulator, args.num_pop_a, known_markers_data, 'P_A')
+    pop_B = create_initial_populations_integrated(recomb_simulator, args.num_pop_b, known_markers_data, 'P_B')
 
-        # Process P_A population
-        hi, het = recomb_simulator.calculate_hi_het(next(iter(pop_A.individuals.values())))
-        initial_hi_het_data['P_A'] = [{'id': ind.individual_id, 'HI': hi, 'HET': het} for ind in pop_A.individuals.values()]
-        for ind in pop_A.individuals.values():
-            initial_locus_data.extend(recomb_simulator.get_genotypes(ind))
+    # Collect initial founder data
+    initial_locus_data = []
+    initial_hi_het_data = {}
 
-        # Process P_B population
-        hi, het = recomb_simulator.calculate_hi_het(next(iter(pop_B.individuals.values())))
-        initial_hi_het_data['P_B'] = [{'id': ind.individual_id, 'HI': hi, 'HET': het} for ind in pop_B.individuals.values()]
-        for ind in pop_B.individuals.values():
-            initial_locus_data.extend(recomb_simulator.get_genotypes(ind))
+    # Process P_A population
+    hi, het = recomb_simulator.calculate_hi_het(next(iter(pop_A.individuals.values())))
+    initial_hi_het_data['P_A'] = [{'id': ind.individual_id, 'HI': hi, 'HET': het} for ind in pop_A.individuals.values()]
+    for ind in pop_A.individuals.values():
+        initial_locus_data.extend(recomb_simulator.get_genotypes(ind))
 
-        # Convert to DataFrame to apply missing data, then convert back to a list of dicts
-        initial_locus_df = pd.DataFrame(initial_locus_data)
+    # Process P_B population
+    hi, het = recomb_simulator.calculate_hi_het(next(iter(pop_B.individuals.values())))
+    initial_hi_het_data['P_B'] = [{'id': ind.individual_id, 'HI': hi, 'HET': het} for ind in pop_B.individuals.values()]
+    for ind in pop_B.individuals.values():
+        initial_locus_data.extend(recomb_simulator.get_genotypes(ind))
 
-        # Apply missing data at point of parent creation
-        initial_locus_df = apply_missing_data(initial_locus_df, known_markers_data)
-        initial_locus_data = initial_locus_df.to_dict('records')
+    # Convert to DataFrame to apply missing data, then convert back to a list of dicts
+    initial_locus_df = pd.DataFrame(initial_locus_data)
 
-        # Build the full crossing plan using the new flags
-        print("Building crossing plan...")
-        crossing_plan = []
+    # Apply missing data at point of parent creation
+    initial_locus_df = apply_missing_data(initial_locus_df, known_markers_data)
+    initial_locus_data = initial_locus_df.to_dict('records')
 
-        # Hybrid generations (HG1, HG2, etc.)
-        if args.hybrid_generations > 0:
-            crossing_plan.extend(build_hybrid_generations('HG', 1, args.hybrid_generations))
+    # Build the full crossing plan using the new flags
+    print("Building crossing plan...")
+    crossing_plan = []
 
-        # Backcross generations to Pop A (BC1A, BC2A, etc.)
-        if args.backcross_A > 0:
-            initial_hybrid_label = f'HG{args.hybrid_generations}' if args.hybrid_generations > 0 else 'F1'
-            crossing_plan.extend(build_backcross_generations('BC', initial_hybrid_gen_label=initial_hybrid_label, pure_pop_label='P_A', num_backcross_generations=args.backcross_A))
+    # Hybrid generations (HG1, HG2, etc.)
+    if args.hybrid_generations > 0:
+        crossing_plan.extend(build_hybrid_generations('HG', 1, args.hybrid_generations))
 
-        # Backcross generations to Pop B (BC1B, BC2B, etc.)
-        if args.backcross_B > 0:
-            initial_hybrid_label = f'HG{args.hybrid_generations}' if args.hybrid_generations > 0 else 'F1'
-            crossing_plan.extend(build_backcross_generations('BC', initial_hybrid_gen_label=initial_hybrid_label, pure_pop_label='P_B', num_backcross_generations=args.backcross_B))
+    # Backcross generations to Pop A (BC1A, BC2A, etc.)
+    if args.backcross_A > 0:
+        initial_hybrid_label = f'HG{args.hybrid_generations}' if args.hybrid_generations > 0 else 'F1'
+        crossing_plan.extend(build_backcross_generations('BC', initial_hybrid_gen_label=initial_hybrid_label, pure_pop_label='P_A', num_backcross_generations=args.backcross_A))
 
-        # Run the simulation
-        print("Starting simulation...")
-        populations_dict, hi_het_data, all_locus_data, ancestry_data, blocks_data, junctions_data = simulate_generations(
-            simulator=recomb_simulator,
-            initial_pop_a=pop_A,
-            initial_pop_b=pop_B,
-            crossing_plan=crossing_plan,
-            number_offspring=number_offspring,
-            crossover_dist=crossover_dist,
-            track_ancestry=args.pedigree_recording,
-            track_blocks=args.track_blocks,
-            track_junctions=args.track_junctions,
-            verbose=True
-        )
+    # Backcross generations to Pop B (BC1B, BC2B, etc.)
+    if args.backcross_B > 0:
+        initial_hybrid_label = f'HG{args.hybrid_generations}' if args.hybrid_generations > 0 else 'F1'
+        crossing_plan.extend(build_backcross_generations('BC', initial_hybrid_gen_label=initial_hybrid_label, pure_pop_label='P_B', num_backcross_generations=args.backcross_B))
 
-        print("\nSimulation complete. Processing results...")
-        handle_outputs(args, populations_dict, hi_het_data, all_locus_data, ancestry_data, blocks_data, junctions_data, initial_locus_data, initial_hi_het_data, known_markers_data)
+    # Run the simulation
+    print("Starting simulation...")
+    populations_dict, hi_het_data, all_locus_data, ancestry_data, blocks_data, junctions_data = simulate_generations(
+        simulator=recomb_simulator,
+        initial_pop_a=pop_A,
+        initial_pop_b=pop_B,
+        crossing_plan=crossing_plan,
+        number_offspring=number_offspring,
+        crossover_dist=crossover_dist,
+        track_ancestry=args.pedigree_recording,
+        track_blocks=args.track_blocks,
+        track_junctions=args.track_junctions,
+        verbose=True
+    )
+
+    print("\nSimulation complete. Processing results...")
+    handle_outputs(args, populations_dict, hi_het_data, all_locus_data, ancestry_data, blocks_data, junctions_data, initial_locus_data, initial_hi_het_data, known_markers_data)
