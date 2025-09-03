@@ -437,7 +437,7 @@ def create_default_markers(args, n_markers, n_chromosomes, pA_freq, pB_freq, md_
     Creates a standardised set of marker data for simulation.
     """
     known_markers_data = []
-    marker_counter = 1
+    marker_counter = 0
 
     if isinstance(pA_freq, (float, int)):
         pA_freq = [pA_freq] * n_markers
@@ -446,17 +446,19 @@ def create_default_markers(args, n_markers, n_chromosomes, pA_freq, pB_freq, md_
     if isinstance(md_prob, (float, int)):
         md_prob = [md_prob] * n_markers
     
-    # Calculate uniform spacing for markers on each chromosome
-    spacing_cm = 100.0 / (n_markers / n_chromosomes + 1) if (n_markers > n_chromosomes) else 0.0
+    markers_per_chr_main = n_markers // n_chromosomes
+    remainder_markers = n_markers % n_chromosomes
 
+    # Loop for the main set of markers on each chromosome
     for chrom in range(1, n_chromosomes + 1):
-        for i in range(n_markers // n_chromosomes):
+        for i in range(markers_per_chr_main):
             marker_id = f"M{marker_counter+1}"
             
-            # Position markers uniformly or randomly based on args.map_generate
             if args.map_generate:
                 position_unit = random.uniform(0.0, 100.0)
             else:
+                # Corrected uniform spacing for each chromosome
+                spacing_cm = 100.0 / (markers_per_chr_main + 1)
                 position_unit = (i + 1) * spacing_cm
             
             marker_data = {
@@ -470,6 +472,29 @@ def create_default_markers(args, n_markers, n_chromosomes, pA_freq, pB_freq, md_
             known_markers_data.append(marker_data)
             marker_counter += 1
             
+    # Handle the remaining markers and assign them to the last chromosome
+    if remainder_markers > 0:
+        for i in range(remainder_markers):
+            marker_id = f"M{marker_counter+1}"
+
+            if args.map_generate:
+                position_unit = random.uniform(0.0, 100.0)
+            else:
+                # Simple linear spacing for the remaining markers
+                spacing_cm = 100.0 / (remainder_markers + 1)
+                position_unit = (i + 1) * spacing_cm
+            
+            marker_data = {
+                'marker_id': marker_id,
+                'chromosome': f'Chr{n_chromosomes}',
+                'position_unit': position_unit,
+                'allele_freq_A': pA_freq[marker_counter],
+                'allele_freq_B': pB_freq[marker_counter],
+                'missing_data_prob': md_prob[marker_counter]
+            }
+            known_markers_data.append(marker_data)
+            marker_counter += 1
+
     return known_markers_data
 
 def read_allele_freq_from_csv(file_path, args):
@@ -1204,7 +1229,6 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
             pA_freq=pA_freqs,
             pB_freq=pB_freqs,
             md_prob=md_probs,
-            map_generate=args.map_generate
         )
 
     # Start the recombination simulator
