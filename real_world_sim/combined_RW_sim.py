@@ -513,21 +513,24 @@ def read_allele_freq_from_csv(file_path, args):
     if not all(col in df.columns for col in required_cols):
         raise ValueError(f"CSV file must contain the following columns: {required_cols}")
 
+    # Check for missing values in any column
+    if df.isnull().values.any():
+        missing_counts = df.isnull().sum()
+        for column, count in missing_counts.items():
+            if count > 0:
+                print(f"Warning: Found {count} empty cells in the '{column}' column. These will be treated as NaN.")
+        
     # 'chromosome' check
     if 'chromosome' not in df.columns:
-        # Use --num_chrs flag if provided, otherwise default to Chr1
         num_markers = len(df)
         num_chrs = args.num_chrs if args.num_chrs else 1
         markers_per_chr = num_markers // num_chrs
         
-        # Assign markers to chromosomes based on num_chrs
         chrom_list = []
         for i in range(num_chrs):
             chrom_list.extend([f'Chr{i+1}'] * markers_per_chr)
         
-        # Handle any remaining markers
         chrom_list.extend([f'Chr{num_chrs}'] * (num_markers % num_chrs))
-
         df['chromosome'] = chrom_list
         print(f"Warning: 'chromosome' column not found. Assigning markers to {num_chrs} chromosomes.")
 
@@ -535,11 +538,9 @@ def read_allele_freq_from_csv(file_path, args):
     if 'position_unit' not in df.columns:
         num_markers = len(df)
         if args.map_generate:
-            # Case 1: --generate is specified and position is missing -> generate random positions
             df['position_unit'] = [random.uniform(0.0, 100.0) for _ in range(num_markers)]
             print("Generating random marker positions due to '--generate' flag.")
         else:
-            # Case 2: --generate is NOT specified and position is missing -> generate uniform positions
             df['position_unit'] = np.linspace(0.0, 100.0, num_markers)
             print("Warning: 'position_unit' column not found. Generating uniform positions.")
     
@@ -1199,7 +1200,7 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
         random.seed(args.seed)
         np.random.seed(args.seed)
     else:
-        print("No seed provided. Using a random seed for this run")
+        print("No seed provided. Using a random seed")
 
     # Determine which mode to run in and get marker data
     known_markers_data = []
@@ -1235,7 +1236,7 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
     recomb_simulator = RecombinationSimulator(known_markers_data=known_markers_data)
 
     # Create the ancestral populations
-    print("\nCreating initial populations (P_A and P_B)...")
+    print("\nCreating initial populations (P_A and P_B)")
     pop_A = create_initial_populations_integrated(recomb_simulator, args.num_pop_a, known_markers_data, 'P_A')
     pop_B = create_initial_populations_integrated(recomb_simulator, args.num_pop_b, known_markers_data, 'P_B')
 
@@ -1263,7 +1264,7 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
     initial_locus_data = initial_locus_df.to_dict('records')
 
     # Build the full crossing plan using the new flags
-    print("Building crossing plan...")
+    print("Building crossing plan")
     crossing_plan = []
 
     # Hybrid generations (HG1, HG2, etc.)
@@ -1281,7 +1282,7 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
         crossing_plan.extend(build_backcross_generations('BC', initial_hybrid_gen_label=initial_hybrid_label, pure_pop_label='P_B', num_backcross_generations=args.backcross_B))
 
     # Run the simulation
-    print("Starting simulation...")
+    print("Starting simulation")
     populations_dict, hi_het_data, all_locus_data, ancestry_data, blocks_data, junctions_data = simulate_generations(
         simulator=recomb_simulator,
         initial_pop_a=pop_A,
@@ -1295,5 +1296,5 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
         verbose=True
     )
 
-    print("\nSimulation complete. Processing results...")
+    print("\nSimulation complete. Processing and saving outputs...")
     handle_outputs(args, populations_dict, hi_het_data, all_locus_data, ancestry_data, blocks_data, junctions_data, initial_locus_data, initial_hi_het_data, known_markers_data)
