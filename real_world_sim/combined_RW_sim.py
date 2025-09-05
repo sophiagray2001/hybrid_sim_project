@@ -7,6 +7,7 @@ import json
 import networkx as nx
 import matplotlib.pyplot as plt
 import multiprocessing
+from collections import defaultdict
 
 # CLASSES
 class Genome:
@@ -616,6 +617,40 @@ def create_initial_populations_integrated(simulator, num_individuals, known_mark
         
     return pop
 
+def add_influx_to_population(all_generations_data, num_to_inject, influx_sources):
+    """
+    Selects a specific number of individuals from specified source populations for influx.
+    Args:
+        all_generations_data (dict): Dictionary of all populations by their generation label.
+        num_to_inject (int): The number of individuals to select from *each* source.
+        influx_sources (list): List of generation labels to pull individuals from.
+
+    Returns:
+        list: A list of individual objects selected for influx.
+    """
+    individuals_to_add = []
+    print(f"Attempting to inject {num_to_inject} individuals from each source: {', '.join(influx_sources)}.")
+
+    for source_label in influx_sources:
+        if source_label in all_generations_data:
+            source_pop = all_generations_data[source_label]
+            if len(source_pop.individuals) >= num_to_inject:
+                # Select a random sample of individuals from the source population
+                influx_sample = random.sample(
+                    list(source_pop.individuals.values()),
+                    num_to_inject
+                )
+                individuals_to_add.extend(influx_sample)
+                print(f"Injecting {num_to_inject} individuals from {source_label}.")
+            else:
+                print(f"Warning: Not enough individuals in {source_label} for influx ({len(source_pop.individuals)} available, {num_to_inject} requested).")
+                individuals_to_add.extend(list(source_pop.individuals.values()))
+                print(f"Injecting {len(source_pop.individuals.values())} individuals from {source_label}.")
+        else:
+            print(f"Warning: Influx source '{source_label}' not found in generations data.")
+
+    return individuals_to_add
+
 def perform_cross_task(args):
     """
     A helper function for multiprocessing to perform a single cross.
@@ -654,12 +689,25 @@ def perform_cross_task(args):
         'junctions_data': junctions
     }
 
-def simulate_generations(simulator, initial_pop_a, initial_pop_b, crossing_plan, number_offspring, crossover_dist, track_ancestry, track_blocks, track_junctions, verbose=True):
+def simulate_generations(
+    simulator, 
+    initial_pop_a, 
+    initial_pop_b, 
+    crossing_plan, 
+    number_offspring, 
+    crossover_dist, 
+    track_ancestry, 
+    track_blocks, 
+    track_junctions, 
+    verbose,
+    num_influx,
+    influx_sources
+):
     """
     Simulates all generations based on the crossing plan.
     """
     populations = {'P_A': initial_pop_a, 'P_B': initial_pop_b}
-    hi_het_data = {}
+    hi_het_data = defaultdict(list)
     all_locus_data = []
     ancestry_data = []
     blocks_data = []
@@ -684,9 +732,38 @@ def simulate_generations(simulator, initial_pop_a, initial_pop_b, crossing_plan,
         parent1_list = parent1_pop.get_individuals_as_list(len(parent1_pop.individuals))
         parent2_list = parent2_pop.get_individuals_as_list(len(parent2_pop.individuals))
 
-        # Shuffle the lists to ensure random pairing
-        random.shuffle(parent1_list)
-        random.shuffle(parent2_list)
+        individuals_from_influx = []
+        # Check if the influx is specified and if the current cross involves one of the source generations
+        # We also check that the influx is not being applied to the initial founder populations.
+        # This is because the influx is designed to be injected into an ongoing breeding population.
+        if (parent1_label in influx_sources or parent2_label in influx_sources):
+             individuals_from_influx = add_influx_to_population(
+                 all_generations_data=populations,
+                 num_to_inject=num_influx,
+                 influx_sources=influx_sources
+             )
+
+        if individuals_from_influx and track_ancestry:
+            for ind in individuals_from_influx:
+                # Add a pedigree entry for this injected individual
+                # Their parent is the source generation they came from, not another individual
+                ancestry_entry = {
+                    'individual_id': ind.individual_id, 
+                    'parent1_id': ind.generation,  # This is the corrected line
+                    'parent2_id': 'founder',
+                    'generation_label': gen_label
+                }
+                ancestry_data.append(ancestry_entry)
+        
+        # Combine the parents for the cross and the injected individuals
+        parent_pool = parent1_list + parent2_list + individuals_from_influx
+        
+        if verbose and individuals_from_influx:
+            print(f"Total parent pool size for {gen_label}: {len(parent_pool)} individuals.")
+            print(f"Original parent count: {len(parent1_list) + len(parent2_list)}, Influx individuals: {len(individuals_from_influx)}")
+            
+        # Shuffle the list to ensure random pairing
+        random.shuffle(parent_pool)
         
         # Create a new population for the current generation
         new_pop = Population(gen_label)
@@ -698,13 +775,13 @@ def simulate_generations(simulator, initial_pop_a, initial_pop_b, crossing_plan,
         offspring_counts = list(number_offspring.keys())
         probabilities = list(number_offspring.values())
 
-        # Determine the number of unique pairs (the size of the smaller population)
-        num_mating_pairs = min(len(parent1_list), len(parent2_list))
-
+        # Determine the number of unique pairs
+        num_mating_pairs = len(parent_pool) // 2
+        
         # Loop through the unique mating pairs
         for i in range(num_mating_pairs):
-            p1 = parent1_list[i]
-            p2 = parent2_list[i]
+            p1 = parent_pool[i * 2]
+            p2 = parent_pool[i * 2 + 1]
 
             # Use the distribution to determine how many offspring to create for this pair
             num_offspring_from_pair = np.random.choice(offspring_counts, p=probabilities)
@@ -735,7 +812,7 @@ def simulate_generations(simulator, initial_pop_a, initial_pop_b, crossing_plan,
 
         populations[gen_label] = new_pop
         hi_het_data[gen_label] = gen_hi_het
-
+        
     return populations, hi_het_data, all_locus_data, ancestry_data, blocks_data, junctions_data
 
 def apply_missing_data(genotype_df, known_markers_data):
@@ -1156,6 +1233,12 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
     simple_group.add_argument("-afA", "--allele_freq_popA", type=str, default="1.0", help="Allele freq. of allele '0' for Pop A. Can be single value or comma-separated list (default: '1.0').")
     simple_group.add_argument("-afB", "--allele_freq_popB", type=str, default="0.0", help="Allele freq. of allele '0' for Pop B (default: '0.0').")
     simple_group.add_argument("-md", "--missing_data", type=str, default="0.0", help="Proportion of missing data per marker (default: '0.0').")
+    simple_group.add_argument('--influx', 
+                             nargs='+', 
+                             metavar=('NUM_INDIVIDUALS', 'GENERATION_LABELS'), 
+                             help="""Add a fixed number of individuals as an influx from specified generations.
+Input as a number and one or more generation labels.
+Example: --influx 5 P_A P_B""")
 
     # Tracking and Output
     tracking_group = parser.add_argument_group('Tracking and Output Options')
@@ -1181,19 +1264,6 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
 
     args = parser.parse_args()
 
-    # Determine crossover mode and distribution
-    try:
-        crossover_dist = _parse_crossover_distribution(args.crossover_dist)
-        # Add the number_offspring parsing right here
-        number_offspring = _parse_number_offspringribution(args.num_offspring)
-
-        print(f"Crossover distribution set to: {crossover_dist}")
-        print(f"Offspring distribution set to: {number_offspring}")
-
-    except ValueError as e:
-        print(f"Error parsing distributions: {e}")
-        exit(1)
-
     # Set the random seed
     if args.seed is not None:
         print(f"Setting random seed to: {args.seed}")
@@ -1204,7 +1274,7 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
 
     # Determine which mode to run in and get marker data
     known_markers_data = []
-
+    
     # Conditional input file logic
     if args.file:
         print(f"\nRunning with input file: {args.file}.")
@@ -1222,7 +1292,7 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
         except ValueError as e:
             print(f"Error with parameters: {e}")
             exit(1)
-
+            
         known_markers_data = create_default_markers(
             args=args,
             n_markers=args.num_marker,
@@ -1255,13 +1325,41 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
     initial_hi_het_data['P_B'] = [{'id': ind.individual_id, 'HI': hi, 'HET': het} for ind in pop_B.individuals.values()]
     for ind in pop_B.individuals.values():
         initial_locus_data.extend(recomb_simulator.get_genotypes(ind))
-
+        
     # Convert to DataFrame to apply missing data, then convert back to a list of dicts
     initial_locus_df = pd.DataFrame(initial_locus_data)
 
     # Apply missing data at point of parent creation
     initial_locus_df = apply_missing_data(initial_locus_df, known_markers_data)
     initial_locus_data = initial_locus_df.to_dict('records')
+
+    # Determine crossover mode and distribution
+    try:
+        crossover_dist = _parse_crossover_distribution(args.crossover_dist)
+        # Add the number_offspring parsing right here
+        number_offspring = _parse_number_offspringribution(args.num_offspring)
+
+        print(f"Crossover distribution set to: {crossover_dist}")
+        print(f"Offspring distribution set to: {number_offspring}")
+
+    except ValueError as e:
+        print(f"Error parsing distributions: {e}")
+        exit(1)
+        
+    if args.influx:
+        try:
+            num_influx = int(args.influx[0])
+            if num_influx < 0:
+                raise ValueError("Number of individuals cannot be negative.")
+            influx_sources = args.influx[1:]
+            print(f"Influx set to {num_influx} individuals from generations: {', '.join(influx_sources)}")
+        except (ValueError, IndexError) as e:
+            print(f"Error parsing --influx flag. Please check the format: --influx NUM_INDIVIDUALS GEN_LABEL1 GEN_LABEL2")
+            print(f"Original error: {e}")
+            exit(1)
+    else:
+        num_influx = 0
+        influx_sources = []
 
     # Build the full crossing plan using the new flags
     print("Building crossing plan")
@@ -1293,7 +1391,9 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
         track_ancestry=args.pedigree_recording,
         track_blocks=args.track_blocks,
         track_junctions=args.track_junctions,
-        verbose=True
+        verbose=True,
+        num_influx=num_influx,
+        influx_sources=influx_sources
     )
 
     print("\nSimulation complete. Processing and saving outputs...")
