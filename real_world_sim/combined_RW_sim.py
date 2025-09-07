@@ -617,39 +617,39 @@ def create_initial_populations_integrated(simulator, num_individuals, known_mark
         
     return pop
 
-def add_influx_to_population(all_generations_data, num_to_inject, influx_sources):
+def generate_new_founders_for_influx(simulator, num_to_inject, known_markers_data):
     """
-    Selects a specific number of individuals from specified source populations for influx.
+    Generates and returns new P_A and P_B founder individuals for an influx.
     Args:
-        all_generations_data (dict): Dictionary of all populations by their generation label.
-        num_to_inject (int): The number of individuals to select from *each* source.
-        influx_sources (list): List of generation labels to pull individuals from.
+        simulator (RecombinationSimulator): The simulator instance to create new genomes.
+        num_to_inject (int): The number of new individuals to generate from each founder population.
+        known_markers_data (list): Marker data with allele frequencies for founder populations.
 
     Returns:
-        list: A list of individual objects selected for influx.
+        list: A list of new Individual objects to be added to the population.
     """
-    individuals_to_add = []
-    print(f"Attempting to inject {num_to_inject} individuals from each source: {', '.join(influx_sources)}.")
+    new_influx_individuals = []
+    
+    # Get the correct allele frequencies for P_A and P_B
+    pa_freqs = [m['allele_freq_A'] for m in known_markers_data]
+    pb_freqs = [m['allele_freq_B'] for m in known_markers_data]
 
-    for source_label in influx_sources:
-        if source_label in all_generations_data:
-            source_pop = all_generations_data[source_label]
-            if len(source_pop.individuals) >= num_to_inject:
-                # Select a random sample of individuals from the source population
-                influx_sample = random.sample(
-                    list(source_pop.individuals.values()),
-                    num_to_inject
-                )
-                individuals_to_add.extend(influx_sample)
-                print(f"Injecting {num_to_inject} individuals from {source_label}.")
-            else:
-                print(f"Warning: Not enough individuals in {source_label} for influx ({len(source_pop.individuals)} available, {num_to_inject} requested).")
-                individuals_to_add.extend(list(source_pop.individuals.values()))
-                print(f"Injecting {len(source_pop.individuals.values())} individuals from {source_label}.")
-        else:
-            print(f"Warning: Influx source '{source_label}' not found in generations data.")
+    # Create new P_A individuals
+    for i in range(num_to_inject):
+        haplotypes = simulator.create_initial_haplotypes(pa_freqs)
+        individual_id = f"NEW_PA_INFLUX_{i}"
+        individual = Individual(individual_id=individual_id, generation='P_A', genome=Genome(haplotypes))
+        new_influx_individuals.append(individual)
 
-    return individuals_to_add
+    # Create new P_B individuals
+    for i in range(num_to_inject):
+        haplotypes = simulator.create_initial_haplotypes(pb_freqs)
+        individual_id = f"NEW_PB_INFLUX_{i}"
+        individual = Individual(individual_id=individual_id, generation='P_B', genome=Genome(haplotypes))
+        new_influx_individuals.append(individual)
+        
+    print(f"Generating and injecting {num_to_inject} new P_A and {num_to_inject} new P_B individuals.")
+    return new_influx_individuals
 
 def perform_cross_task(args):
     """
@@ -701,7 +701,7 @@ def simulate_generations(
     track_junctions, 
     verbose,
     num_influx,
-    influx_sources
+    influx_start_gen_label
 ):
     """
     Simulates all generations based on the crossing plan.
@@ -712,95 +712,79 @@ def simulate_generations(
     ancestry_data = []
     blocks_data = []
     junctions_data = []
+    
+    # Flag to control when influx starts
+    influx_active = False
 
     for step in crossing_plan:
         gen_label = step['generation_label']
         parent1_label = step['parent1_label']
         parent2_label = step['parent2_label']
         
-        # Reset the offspring counter for each new generation
+        # Activate influx if the current generation matches the start label
+        if gen_label == influx_start_gen_label:
+            influx_active = True
+
         offspring_counter = 1
         
         if verbose:
             print(f"Simulating generation: {gen_label} (crossing {parent1_label} x {parent2_label})...")
         
-        # Get parent populations from the dictionary
         parent1_pop = populations[parent1_label]
         parent2_pop = populations[parent2_label]
         
-        # Get a list of all individuals for mating from each population
         parent1_list = parent1_pop.get_individuals_as_list(len(parent1_pop.individuals))
         parent2_list = parent2_pop.get_individuals_as_list(len(parent2_pop.individuals))
 
         individuals_from_influx = []
-        # Check if the influx is specified and if the current cross involves one of the source generations
-        # We also check that the influx is not being applied to the initial founder populations.
-        # This is because the influx is designed to be injected into an ongoing breeding population.
-        if (parent1_label in influx_sources or parent2_label in influx_sources):
-             individuals_from_influx = add_influx_to_population(
-                 all_generations_data=populations,
+        # Check if influx is currently active
+        if influx_active:
+             individuals_from_influx = generate_new_founders_for_influx(
+                 simulator=simulator,
                  num_to_inject=num_influx,
-                 influx_sources=influx_sources
+                 known_markers_data=simulator.known_markers_data
              )
 
         if individuals_from_influx and track_ancestry:
             for ind in individuals_from_influx:
-                # Add a pedigree entry for this injected individual
-                # Their parent is the source generation they came from, not another individual
                 ancestry_entry = {
                     'individual_id': ind.individual_id, 
-                    'parent1_id': ind.generation,  # This is the corrected line
+                    'parent1_id': ind.generation, 
                     'parent2_id': 'founder',
                     'generation_label': gen_label
                 }
                 ancestry_data.append(ancestry_entry)
         
-        # Combine the parents for the cross and the injected individuals
         parent_pool = parent1_list + parent2_list + individuals_from_influx
         
         if verbose and individuals_from_influx:
             print(f"Total parent pool size for {gen_label}: {len(parent_pool)} individuals.")
             print(f"Original parent count: {len(parent1_list) + len(parent2_list)}, Influx individuals: {len(individuals_from_influx)}")
             
-        # Shuffle the list to ensure random pairing
         random.shuffle(parent_pool)
         
-        # Create a new population for the current generation
         new_pop = Population(gen_label)
-        
-        # Create a list of all mating tasks
         mating_tasks = []
-        
-        # Get the keys (number of offspring) and probabilities from the distribution
         offspring_counts = list(number_offspring.keys())
         probabilities = list(number_offspring.values())
-
-        # Determine the number of unique pairs
         num_mating_pairs = len(parent_pool) // 2
         
-        # Loop through the unique mating pairs
         for i in range(num_mating_pairs):
             p1 = parent_pool[i * 2]
             p2 = parent_pool[i * 2 + 1]
-
-            # Use the distribution to determine how many offspring to create for this pair
             num_offspring_from_pair = np.random.choice(offspring_counts, p=probabilities)
-
             for _ in range(num_offspring_from_pair):
                 offspring_id = f"{gen_label}_{offspring_counter}"
                 mating_tasks.append((simulator, p1, p2, crossover_dist, track_ancestry, track_blocks, track_junctions, gen_label, offspring_id))
                 offspring_counter += 1
 
-        # Determine the number of processes to use (e.g., all available cores)
         num_processes = multiprocessing.cpu_count()
         if verbose:
             print(f"Using {num_processes} cores for parallel processing.")
         
-        # Use a Pool to parallelise the mating process
         with multiprocessing.Pool(processes=num_processes) as pool:
             results = pool.map(perform_cross_task, mating_tasks)
             
-        # Process results from the pool
         gen_hi_het = []
         for result in results:
             new_pop.add_individual(result['individual'])
@@ -1351,15 +1335,15 @@ Example: --influx 5 P_A P_B""")
             num_influx = int(args.influx[0])
             if num_influx < 0:
                 raise ValueError("Number of individuals cannot be negative.")
-            influx_sources = args.influx[1:]
-            print(f"Influx set to {num_influx} individuals from generations: {', '.join(influx_sources)}")
+            influx_start_gen_label = args.influx[1]
+            print(f"Influx set to {num_influx} new P_A individuals and {num_influx} new P_B indiviudals starting from generation: {influx_start_gen_label}")
         except (ValueError, IndexError) as e:
-            print(f"Error parsing --influx flag. Please check the format: --influx NUM_INDIVIDUALS GEN_LABEL1 GEN_LABEL2")
+            print(f"Error parsing --influx flag. Please check the format: --influx NUM_INDIVIDUALS START_GEN_LABEL")
             print(f"Original error: {e}")
             exit(1)
     else:
         num_influx = 0
-        influx_sources = []
+        influx_start_gen_label = None
 
     # Build the full crossing plan using the new flags
     print("Building crossing plan")
@@ -1393,7 +1377,7 @@ Example: --influx 5 P_A P_B""")
         track_junctions=args.track_junctions,
         verbose=True,
         num_influx=num_influx,
-        influx_sources=influx_sources
+        influx_start_gen_label=influx_start_gen_label
     )
 
     print("\nSimulation complete. Processing and saving outputs...")
