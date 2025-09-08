@@ -721,8 +721,12 @@ def simulate_generations(
         parent1_label = step['parent1_label']
         parent2_label = step['parent2_label']
         
+        # --- NEW DEBUGGING CODE ---
+        print(f"Current Generation: '{gen_label}' | Influx Start Label: '{influx_start_gen_label}'")
+        # --- END OF DEBUGGING CODE ---
+        
         # Activate influx if the current generation matches the start label
-        if gen_label == influx_start_gen_label:
+        if gen_label.strip() == influx_start_gen_label.strip():
             influx_active = True
 
         offspring_counter = 1
