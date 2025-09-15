@@ -207,8 +207,8 @@ class RecombinationSimulator:
         """
         Creates a new offspring by simulating recombination from two parents.
         
-        This function now simulates the total number of crossovers for the entire
-        diploid chromosome pair and distributes them between the two gametes.
+        This function simulates the total number of crossovers for the entire
+        diploid chromosome pair and distributes them.
         
         Args:
             parent1 (Individual): The first parent.
@@ -240,7 +240,7 @@ class RecombinationSimulator:
             num_crossovers_pA = random.randint(0, num_diploid_crossovers)
             num_crossovers_pB = num_diploid_crossovers - num_crossovers_pA
 
-            # Simulate recombination for each new haplotype using the distributed counts
+            # Simulate recombination for each new haplosome using the distributed counts
             new_hapA, crossovers1 = self._simulate_haploid_recombination(pA_hapA, pA_hapB, chrom_id, num_crossovers_pA, track_junctions)
             new_hapB, crossovers2 = self._simulate_haploid_recombination(pB_hapA, pB_hapB, chrom_id, num_crossovers_pB, track_junctions)
 
@@ -721,12 +721,7 @@ def simulate_generations(
         parent1_label = step['parent1_label']
         parent2_label = step['parent2_label']
         
-        # --- NEW DEBUGGING CODE ---
-        print(f"Current Generation: '{gen_label}' | Influx Start Label: '{influx_start_gen_label}'")
-        # --- END OF DEBUGGING CODE ---
-        
-        # Activate influx if the current generation matches the start label
-        if gen_label.strip() == influx_start_gen_label.strip():
+        if influx_start_gen_label is not None and gen_label.strip() == influx_start_gen_label.strip():
             influx_active = True
 
         offspring_counter = 1
