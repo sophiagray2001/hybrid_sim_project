@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import multiprocessing
 from collections import defaultdict
 import ast
+import time
 
 # CLASSES
 class Genome:
@@ -655,9 +656,12 @@ def generate_new_founders_for_influx(simulator, num_to_inject, known_markers_dat
 def perform_cross_task(args):
     """
     A helper function for multiprocessing to perform a single cross.
-    This function accepts a tuple of arguments and unpacks them.
+    This version creates its own RecombinationSimulator to reduce data transfer.
     """
-    (recomb_simulator, parent1, parent2, crossover_dist, pedigree_recording, track_blocks, track_junctions, generation_label, new_offspring_id) = args
+    (known_markers_data, parent1, parent2, crossover_dist, pedigree_recording, track_blocks, track_junctions, generation_label, new_offspring_id) = args
+    
+    # Each process creates its own simulator instance
+    recomb_simulator = RecombinationSimulator(known_markers_data=known_markers_data)
     
     # The updated mate function returns the offspring with ID and generation already set.
     offspring, blocks, junctions = recomb_simulator.mate(
@@ -671,16 +675,10 @@ def perform_cross_task(args):
         new_offspring_id
     )
     
-    # Calculate HI and HET for the new offspring
     hi, het = recomb_simulator.calculate_hi_het(offspring)
-    
-    # Get all locus data
     locus_data = recomb_simulator.get_genotypes(offspring)
-    
-    # Get ancestry data
     ancestry_data = [{'offspring_id': offspring.individual_id, 'parent1_id': offspring.parent1_id, 'parent2_id': offspring.parent2_id}] if pedigree_recording else []
     
-    # Return a dictionary of all results
     return {
         'individual': offspring,
         'hi_het': {'id': offspring.individual_id, 'HI': hi, 'HET': het},
@@ -690,126 +688,152 @@ def perform_cross_task(args):
         'junctions_data': junctions
     }
 
+def perform_batch_cross_task(batch_of_tasks):
+    """
+    A helper function to run a batch of crosses in a single process.
+    """
+    batch_results = []
+    for task in batch_of_tasks:
+        batch_results.append(perform_cross_task(task))
+    return batch_results
+
 def simulate_generations(
-    simulator, 
-    initial_pop_a, 
-    initial_pop_b, 
-    crossing_plan, 
-    number_offspring, 
-    crossover_dist, 
-    track_ancestry, 
-    track_blocks, 
-    track_junctions, 
+    simulator,
+    initial_pop_a,
+    initial_pop_b,
+    crossing_plan,
+    number_offspring,
+    crossover_dist,
+    track_ancestry,
+    track_blocks,
+    track_junctions,
     verbose,
     num_influx,
     influx_start_gen_label,
-    max_processes=None
+    max_processes
 ):
     """
-    Simulates all generations based on the crossing plan.
+    Runs the simulation for the specified generations based on the crossing plan.
     """
-    populations = {'P_A': initial_pop_a, 'P_B': initial_pop_b}
-    hi_het_data = defaultdict(list)
+    populations_dict = {'P_A': initial_pop_a, 'P_B': initial_pop_b}
+    
     all_locus_data = []
+    hi_het_data = {}
     ancestry_data = []
     blocks_data = []
     junctions_data = []
     
-    # Flag to control when influx starts
-    influx_active = False
+    num_processes = max_processes if max_processes else multiprocessing.cpu_count()
+    if verbose:
+        print(f"Using {num_processes} CPU cores for parallel processing.")
 
-    for step in crossing_plan:
-        gen_label = step['generation_label']
-        parent1_label = step['parent1_label']
-        parent2_label = step['parent2_label']
-        
-        if influx_start_gen_label is not None and gen_label.strip() == influx_start_gen_label.strip():
-            influx_active = True
+    # Start with the initial populations
+    current_parents = populations_dict.copy()
+    
+    # Iterate through the crossing plan
+    for cross in crossing_plan:
+        gen_label = cross['generation_label']
+        parent1_label = cross['parent1_label']
+        parent2_label = cross['parent2_label']
+        cross_type = cross['type']
 
-        offspring_counter = 1
-        
         if verbose:
-            print(f"Simulating generation: {gen_label} (crossing {parent1_label} x {parent2_label})...")
-        
-        parent1_pop = populations[parent1_label]
-        parent2_pop = populations[parent2_label]
-        
-        parent1_list = parent1_pop.get_individuals_as_list(len(parent1_pop.individuals))
-        parent2_list = parent2_pop.get_individuals_as_list(len(parent2_pop.individuals))
+            print(f"\n--- Simulating Generation {gen_label} ({cross_type}) ---")
 
-        individuals_from_influx = []
-        # Check if influx is currently active
-        if influx_active:
-             individuals_from_influx = generate_new_founders_for_influx(
-                 simulator=simulator,
-                 num_to_inject=num_influx,
-                 known_markers_data=simulator.known_markers_data
-             )
+        # --- PARENT SELECTION LOGIC ---
+        parent1_pop = populations_dict.get(parent1_label)
+        parent2_pop = populations_dict.get(parent2_label)
+        
+        if not parent1_pop or not parent2_pop:
+            raise ValueError(f"Parent population for '{gen_label}' not found.")
 
-        if individuals_from_influx and track_ancestry:
-            for ind in individuals_from_influx:
-                ancestry_entry = {
-                    'individual_id': ind.individual_id, 
-                    'parent1_id': ind.generation, 
-                    'parent2_id': 'founder',
-                    'generation_label': gen_label
-                }
-                ancestry_data.append(ancestry_entry)
-        
-        parent_pool = parent1_list + parent2_list + individuals_from_influx
-        
-        if verbose and individuals_from_influx:
-            print(f"Total parent pool size for {gen_label}: {len(parent_pool)} individuals.")
-            print(f"Original parent count: {len(parent1_list) + len(parent2_list)}, Influx individuals: {len(individuals_from_influx)}")
-            
-        random.shuffle(parent_pool)
-        
+        parent_pool_1 = list(parent1_pop.individuals.values())
+        parent_pool_2 = list(parent2_pop.individuals.values())
+
+        if parent1_label == parent2_label:
+            # Selfing (e.g., F1 x F1)
+            parent_pairs = list(zip(parent_pool_1, parent_pool_1))
+        else:
+            # Standard cross (e.g., P_A x P_B, F1 x P_A)
+            parent_pairs = []
+            for p1 in parent_pool_1:
+                p2 = random.choice(parent_pool_2)
+                parent_pairs.append((p1, p2))
+
+        # Handle influx if scheduled for this generation
+        if influx_start_gen_label and gen_label == influx_start_gen_label:
+            if verbose:
+                print(f"Adding an influx of {num_influx} individuals from P_A and P_B.")
+            new_influx_a = generate_new_founders_for_influx(simulator, num_influx, simulator.known_markers_data, 'P_A')
+            new_influx_b = generate_new_founders_for_influx(simulator, num_influx, simulator.known_markers_data, 'P_B')
+            current_parents['P_A'].individuals.update(new_influx_a.individuals)
+            current_parents['P_B'].individuals.update(new_influx_b.individuals)
+        # --- END OF PARENT SELECTION LOGIC ---
+
         new_pop = Population(gen_label)
-        mating_tasks = []
-        offspring_counts = list(number_offspring.keys())
-        probabilities = list(number_offspring.values())
-        num_mating_pairs = len(parent_pool) // 2
         
-        for i in range(num_mating_pairs):
-            p1 = parent_pool[i * 2]
-            p2 = parent_pool[i * 2 + 1]
-            num_offspring_from_pair = np.random.choice(offspring_counts, p=probabilities)
-            for _ in range(num_offspring_from_pair):
-                offspring_id = f"{gen_label}_{offspring_counter}"
-                mating_tasks.append((simulator, p1, p2, crossover_dist, track_ancestry, track_blocks, track_junctions, gen_label, offspring_id))
+        mating_tasks = []
+        offspring_counter = 0
+        for p1, p2 in parent_pairs:
+            # For each mating pair, generate offspring based on the distribution
+            num_offspring_to_generate = np.random.choice(
+                list(number_offspring.keys()), 
+                p=list(number_offspring.values())
+            )
+
+            for _ in range(num_offspring_to_generate):
+                offspring_id = f"{gen_label}_{offspring_counter + 1}"
+                mating_tasks.append((
+                    simulator.known_markers_data, 
+                    p1, p2, 
+                    crossover_dist, 
+                    track_ancestry, 
+                    track_blocks, 
+                    track_junctions, 
+                    gen_label, 
+                    offspring_id)
+                )
                 offspring_counter += 1
 
-        # Prevent BLAS/OpenMP oversubscription
-        os.environ.setdefault('OMP_NUM_THREADS', '1')
-        os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
-        os.environ.setdefault('MKL_NUM_THREADS', '1')
-        os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
-
-        available = multiprocessing.cpu_count()
-        if max_processes is not None:
-                num_processes = min(max_processes, available)
+        # Check if the number of tasks is too small for efficient multiprocessing
+        if len(mating_tasks) <= num_processes:
+            if verbose:
+                print("Total tasks are less than the number of processes. Running in single-thread mode.")
+            flat_results = []
+            for task in mating_tasks:
+                flat_results.append(perform_cross_task(task))
         else:
-                num_processes = min(16, available)  # default cap if not specified
+            # Chunk the mating tasks into smaller batches for more efficient parallel processing
+            batch_size = 500
+            batched_mating_tasks = [mating_tasks[i:i + batch_size] for i in range(0, len(mating_tasks), batch_size)]
 
-        if verbose:
-                print(f"Using {num_processes} cores for parallel processing.")
-
-        with multiprocessing.Pool(processes=num_processes) as pool:
-                results = pool.map(perform_cross_task, mating_tasks)
+            with multiprocessing.Pool(processes=num_processes) as pool:
+                results = pool.map(perform_batch_cross_task, batched_mating_tasks)
             
-        gen_hi_het = []
-        for result in results:
+            flat_results = [item for sublist in results for item in sublist]
+        for result in flat_results:
             new_pop.add_individual(result['individual'])
-            gen_hi_het.append(result['hi_het'])
+            # Correctly collect hi_het data for each individual
+            hi_het_data[result['individual'].individual_id] = result['hi_het']
+            
             all_locus_data.extend(result['locus_data'])
             ancestry_data.extend(result['ancestry_data'])
             blocks_data.extend(result['blocks_data'])
             junctions_data.extend(result['junctions_data'])
 
-        populations[gen_label] = new_pop
-        hi_het_data[gen_label] = gen_hi_het
+        populations_dict[gen_label] = new_pop
         
-    return populations, hi_het_data, all_locus_data, ancestry_data, blocks_data, junctions_data
+        # Remove old, unneeded populations from memory
+        generations_to_keep = {'P_A', 'P_B', gen_label}
+        populations_to_delete = [
+            key for key in populations_dict.keys() 
+            if key not in generations_to_keep
+        ]
+        
+        for key in populations_to_delete:
+            del populations_dict[key]
+        
+    return populations_dict, hi_het_data, all_locus_data, ancestry_data, blocks_data, junctions_data
 
 def apply_missing_data(genotype_df, known_markers_data):
     """
@@ -836,34 +860,27 @@ def apply_missing_data(genotype_df, known_markers_data):
 
 def calculate_generational_means(hi_het_data):
     """
-    Calculates the mean HI and HET for each generation from the raw data.
-    
-    Args:
-        hi_het_data (dict): The dictionary containing HI and HET data for each individual,
-                            organized by generation.
-    
-    Returns:
-        dict: A dictionary of dictionaries with the mean HI and HET for each generation.
+    Calculates the mean hybrid index and heterozygosity for each generation.
     """
+    grouped_data = {}
+    for individual_id, record in hi_het_data.items():
+        # Get the generation label from the individual ID (e.g., 'F1' from 'F1_1')
+        gen = individual_id.split('_')[0]
+        if gen not in grouped_data:
+            grouped_data[gen] = {'hi': [], 'het': []}
+        
+        grouped_data[gen]['hi'].append(record['HI'])
+        grouped_data[gen]['het'].append(record['HET'])
+
     generational_means = {}
-    for gen_label, records in hi_het_data.items():
-        if not records:
-            continue
-        
-        # Extract all HI and HET values for the current generation
-        hi_values = [r['HI'] for r in records]
-        het_values = [r['HET'] for r in records]
-        
-        # Calculate the means
-        mean_hi = np.mean(hi_values)
-        mean_het = np.mean(het_values)
-        
-        generational_means[gen_label] = {
-            'mean_HI': mean_hi,
-            'mean_HET': mean_het
+    for gen, data in grouped_data.items():
+        generational_means[gen] = {
+            'mean_hi': np.mean(data['hi']),
+            'mean_het': np.mean(data['het'])
         }
+        
     return generational_means
-    
+
 def plot_triangle_hi_het(populations_dict, hi_het_data, output_prefix):
     """
     Generates a triangle plot of Hybrid Index (HI) vs Heterozygosity (HET)
@@ -903,7 +920,7 @@ def plot_triangle_hi_het(populations_dict, hi_het_data, output_prefix):
     for i, gen_label in enumerate(sorted_generations):
         means = generational_means[gen_label]
         # Create the scatter plot point
-        scatter_point = ax.scatter(means['mean_HI'], means['mean_HET'], 
+        scatter_point = ax.scatter(means['mean_hi'], means['mean_het'], 
                                    label=gen_label, alpha=0.8, color=colors(i), s=100)
         # Add the point to the list of legend handles
         legend_elements.append(scatter_point)
@@ -957,49 +974,42 @@ def plot_triangle_hi_het(populations_dict, hi_het_data, output_prefix):
 
 def plot_pedigree_visual(ancestry_data_df, start_individual_id, output_path):
     """
-    Generates a pedigree tree plot for a given individual using NetworkX and Matplotlib. Designed to trace a single lineage backward.
+    Generates a pedigree tree plot for a given individual using NetworkX and Matplotlib. 
+    Traces a single lineage backward.
     """
     if ancestry_data_df.empty:
         print("Error: Ancestry data is empty. Cannot plot tree.")
         return
 
-    # Create a directed graph from the ancestry data
-    G = nx.DiGraph()
+    # Use a dictionary for O(1) lookups
+    ancestry_dict = ancestry_data_df.set_index('offspring_id').to_dict('index')
 
-    # Build the graph by tracing lineage back from the start individual
+    G = nx.DiGraph()
     nodes_to_process = {start_individual_id}
     all_nodes = set()
+    G.add_node(start_individual_id)
 
-    # Add the starting node to the graph immediately, regardless of whether it has parents.
-    G.add_node(start_individual_id) 
-    
     while nodes_to_process:
         current_node_id = nodes_to_process.pop()
         all_nodes.add(current_node_id)
         
-        row = ancestry_data_df[ancestry_data_df['offspring_id'] == current_node_id]
+        # Fast lookup from the dictionary
+        row = ancestry_dict.get(current_node_id)
         
-        if not row.empty:
-            parent1 = row['parent1_id'].iloc[0]
-            parent2 = row['parent2_id'].iloc[0]
+        if row:
+            parent1 = row['parent1_id']
+            parent2 = row['parent2_id']
             
-            if pd.notna(parent1):
+            if pd.notna(parent1) and parent1 not in all_nodes:
                 G.add_edge(parent1, current_node_id)
                 nodes_to_process.add(parent1)
-            if pd.notna(parent2):
+            if pd.notna(parent2) and parent2 not in all_nodes:
                 G.add_edge(parent2, current_node_id)
                 nodes_to_process.add(parent2)
 
-    # Plotting the graph
     plt.figure(figsize=(15, 10))
-
-    # Use a specific layout to make the tree look good
     pos = nx.kamada_kawai_layout(G)
-    
-    # Draw the nodes and edges
     nx.draw(G, pos, with_labels=False, node_size=2000, node_color='skyblue', font_size=10, font_weight='bold', edge_color='gray', arrows=True)
-    
-    # Add labels to the nodes
     labels = {node: str(node) for node in G.nodes()}
     nx.draw_networkx_labels(G, pos, labels=labels)
 
@@ -1095,20 +1105,19 @@ def plot_full_pedigree(ancestry_data_df, output_path):
         return
 
     G = nx.DiGraph()
-
-    # Iterate through all parent-offspring pairs
+    # Build a list of edges from the DataFrame for fast addition
+    edges_to_add = []
     for _, row in ancestry_data_df.iterrows():
         parent1 = row['parent1_id']
         parent2 = row['parent2_id']
         offspring = row['offspring_id']
-
-        # Add directed edges for each relationship
         if pd.notna(parent1):
-            G.add_edge(parent1, offspring)
+            edges_to_add.append((parent1, offspring))
         if pd.notna(parent2):
-            G.add_edge(parent2, offspring)
+            edges_to_add.append((parent2, offspring))
 
-    # Use a hierarchical layout for clarity
+    G.add_edges_from(edges_to_add)
+
     try:
         pos = nx.drawing.nx_pydot.graphviz_layout(G, prog='dot')
     except ImportError:
@@ -1148,9 +1157,15 @@ def handle_outputs(args, populations_dict, hi_het_data, all_locus_data, ancestry
     print(f"Genotype data saved to: {output_path_prefix}_locus_genotype_data.csv")
 
     all_hi_het_records = []
-    for gen, records in hi_het_data.items():
-        for record in records:
-            all_hi_het_records.append({'generation': gen, 'individual_id': record['id'], 'hybrid_index': record['HI'], 'heterozygosity': record['HET']})
+    for individual_id, record in hi_het_data.items():
+        # The generation label is the part of the ID before the first underscore
+        gen = individual_id.split('_')[0]
+        all_hi_het_records.append({
+            'generation': gen, 
+            'individual_id': individual_id, 
+            'hybrid_index': record['HI'], 
+            'heterozygosity': record['HET']
+        })
     hi_het_df = pd.DataFrame(all_hi_het_records)
     hi_het_df.to_csv(f"{output_path_prefix}_individual_hi_het.csv", index=False)
     print(f"Individual HI and HET data saved to: {output_path_prefix}_individual_hi_het.csv")
@@ -1207,6 +1222,8 @@ def handle_outputs(args, populations_dict, hi_het_data, all_locus_data, ancestry
 
 # MAIN RUN AND OUTPUTS
 
+# MAIN RUN AND OUTPUTS
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="A genetic simulation script for backcross and hybrid crossing generations.",
@@ -1224,13 +1241,13 @@ Otherwise, the simulation defaults with internally generated data.""")
     general_params.add_argument("-npa", "--num_pop_a", type=int, default=10, help="Number of individuals in the starting Population A (default: 10).")
     general_params.add_argument("-npb", "--num_pop_b", type=int, default=10, help="Number of individuals in the starting Population B (default: 10).")
     general_params.add_argument("-no", "--num_offspring", type=str, default='{"1": 1.0}',
-                                help="""A probability distribution for number of offspring per mating pair.
+                                 help="""A probability distribution for number of offspring per mating pair.
 Input as a string dictionary, e.g., '{"0":0.2, "1": 0.7, "2": 0.1}'. (default: '{"2": 1.0}')""")
     general_params.add_argument("-HG", "--hybrid_generations", type=int, default=1, help="Number of hybrid (HG) generations to simulate (default: 1).")
     general_params.add_argument("-BCA", "--backcross_A", type=int, default=0, help="Number of backcross generations to Population A (default: 0).")
     general_params.add_argument("-BCB", "--backcross_B", type=int, default=0, help="Number of backcross generations to Population B (default: 0).")
     general_params.add_argument("-cd", "--crossover_dist", type=str, default='{"1": 1.0}',
-                                help="""A probability distribution for crossovers per chromosome.
+                                 help="""A probability distribution for crossovers per chromosome.
 Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0}')""")
     general_params.add_argument("--seed", type=int, default=None, help="A seed for the random number generator (default: None).")
     general_params.add_argument("--threads", type=int, default=None, help="Number of CPU cores to use (default: min(16, available cores))")
@@ -1243,33 +1260,33 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
     simple_group.add_argument("-afB", "--allele_freq_popB", type=str, default="0.0", help="Allele freq. of allele '0' for Pop B (default: '0.0').")
     simple_group.add_argument("-md", "--missing_data", type=str, default="0.0", help="Proportion of missing data per marker (default: '0.0').")
     simple_group.add_argument('--influx',
-                             nargs='+', 
-                             metavar=('NUM_INDIVIDUALS', 'GENERATION_LABELS'), 
-                             help="""Add a fixed number of individuals as an influx from specified generations.
+                              nargs='+', 
+                              metavar=('NUM_INDIVIDUALS', 'GENERATION_LABELS'), 
+                              help="""Add a fixed number of individuals as an influx from specified generations.
 Input as a number and one or more generation labels.
 Example: --influx 5 P_A P_B""")
 
     # Tracking and Output
     tracking_group = parser.add_argument_group('Tracking and Output Options')
     tracking_group.add_argument("-pr", "--pedigree_recording", action="store_true",
-                                help="Store and output the parental IDs for each individual. This also produces an ancestry CSV file.")
+                                 help="Store and output the parental IDs for each individual. This also produces an ancestry CSV file.")
     tracking_group.add_argument("-pv", "--pedigree_visual", nargs='?', const=True, default=False, help="Generate a pedigree tree visualisation. Provide an individual ID to start from a specific point. Requires pedigree recording flag")
     tracking_group.add_argument('-fp', '--full_pedigree_visual', action='store_true', help="Generate a pedigree tree visualisation for the entire simulation.")
     tracking_group.add_argument("-tb", "--track_blocks", action="store_true",
-                                help="Tracks and outputs blocks of continuous ancestry on chromosomes. This also produces a blocks CSV file.")
+                                 help="Tracks and outputs blocks of continuous ancestry on chromosomes. This also produces a blocks CSV file.")
     tracking_group.add_argument("-tj", "--track_junctions", action="store_true",
-                                help="Tracks and outputs the positions of ancestry junctions (crossovers). This also produces a junctions CSV file.")
+                                 help="Tracks and outputs the positions of ancestry junctions (crossovers). This also produces a junctions CSV file.")
     tracking_group.add_argument("-gmap", "--map_generate", action="store_true",
-                                help="""Randomly assigns marker positions. When using internal default parameters, this overrides uniform placement. This is used only if 'position_unit' is not in the input file.""")
+                                 help="""Randomly assigns marker positions. When using internal default parameters, this overrides uniform placement. This is used only if 'position_unit' is not in the input file.""")
     tracking_group.add_argument("-tp", "--triangle_plot", action="store_true",
-                                help="Generates a triangle plot of allele frequencies.")
+                                 help="Generates a triangle plot of allele frequencies.")
 
     # Output Arguments
     tracking_argument_group = parser.add_argument_group('Output Arguments')
     tracking_argument_group.add_argument("-on", "--output_name", type=str, default="results",
-                                         help="Base name for all output files (default: 'results').")
+                                          help="Base name for all output files (default: 'results').")
     tracking_argument_group.add_argument("-od", "--output_dir", type=str, default="simulation_outputs",
-                                         help="Directory to save output files (default: 'simulation_outputs').")
+                                          help="Directory to save output files (default: 'simulation_outputs').")
 
     args = parser.parse_args()
 
@@ -1319,27 +1336,31 @@ Example: --influx 5 P_A P_B""")
     pop_A = create_initial_populations_integrated(recomb_simulator, args.num_pop_a, known_markers_data, 'P_A')
     pop_B = create_initial_populations_integrated(recomb_simulator, args.num_pop_b, known_markers_data, 'P_B')
 
-    # Collect initial founder data
+    # Collect initial founder locus data
     initial_locus_data = []
-    initial_hi_het_data = {}
-
-    # Process P_A population
-    hi, het = recomb_simulator.calculate_hi_het(next(iter(pop_A.individuals.values())))
-    initial_hi_het_data['P_A'] = [{'id': ind.individual_id, 'HI': hi, 'HET': het} for ind in pop_A.individuals.values()]
     for ind in pop_A.individuals.values():
         initial_locus_data.extend(recomb_simulator.get_genotypes(ind))
-
-    # Process P_B population
-    hi, het = recomb_simulator.calculate_hi_het(next(iter(pop_B.individuals.values())))
-    initial_hi_het_data['P_B'] = [{'id': ind.individual_id, 'HI': hi, 'HET': het} for ind in pop_B.individuals.values()]
     for ind in pop_B.individuals.values():
         initial_locus_data.extend(recomb_simulator.get_genotypes(ind))
         
-    # Convert to DataFrame to apply missing data, then convert back to a list of dicts
+    # Convert to DataFrame to apply missing data
     initial_locus_df = pd.DataFrame(initial_locus_data)
 
     # Apply missing data at point of parent creation
     initial_locus_df = apply_missing_data(initial_locus_df, known_markers_data)
+    
+    # After applying missing data, recalculate the HI/HET for the founders
+    # The hi_het data is collected in a single, flat dictionary, matching the output of simulate_generations
+    initial_hi_het_data = {}
+    
+    for ind in pop_A.individuals.values():
+        hi, het = recomb_simulator.calculate_hi_het(ind)
+        initial_hi_het_data[ind.individual_id] = {'HI': hi, 'HET': het}
+    
+    for ind in pop_B.individuals.values():
+        hi, het = recomb_simulator.calculate_hi_het(ind)
+        initial_hi_het_data[ind.individual_id] = {'HI': hi, 'HET': het}
+        
     initial_locus_data = initial_locus_df.to_dict('records')
 
     # Determine crossover mode and distribution
@@ -1388,6 +1409,9 @@ Example: --influx 5 P_A P_B""")
         initial_hybrid_label = f'HG{args.hybrid_generations}' if args.hybrid_generations > 0 else 'F1'
         crossing_plan.extend(build_backcross_generations('BC', initial_hybrid_gen_label=initial_hybrid_label, pure_pop_label='P_B', num_backcross_generations=args.backcross_B))
 
+    # Start the timer
+    start_time = time.time()
+
     # Run the simulation
     print("Starting simulation")
     populations_dict, hi_het_data, all_locus_data, ancestry_data, blocks_data, junctions_data = simulate_generations(
@@ -1406,5 +1430,17 @@ Example: --influx 5 P_A P_B""")
         max_processes=args.threads
     )
 
+    # End the timer and calculate the elapsed time
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+
     print("\nSimulation complete. Processing and saving outputs...")
-    handle_outputs(args, populations_dict, hi_het_data, all_locus_data, ancestry_data, blocks_data, junctions_data, initial_locus_data, initial_hi_het_data, known_markers_data)
+    print(f"Total simulation runtime: {elapsed_time:.2f} seconds")
+
+    # Create a temporary dictionary for all HI/HET data
+    all_hi_het_data = {}
+    all_hi_het_data.update(initial_hi_het_data)
+    all_hi_het_data.update(hi_het_data)
+    
+    # Call the function with the new, correctly formatted dictionary
+    handle_outputs(args, populations_dict, all_hi_het_data, all_locus_data, ancestry_data, blocks_data, junctions_data, initial_locus_data, initial_hi_het_data, known_markers_data)
