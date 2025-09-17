@@ -8,6 +8,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import multiprocessing
 from collections import defaultdict
+import ast
 
 # CLASSES
 class Genome:
@@ -701,7 +702,8 @@ def simulate_generations(
     track_junctions, 
     verbose,
     num_influx,
-    influx_start_gen_label
+    influx_start_gen_label,
+    max_processes=None
 ):
     """
     Simulates all generations based on the crossing plan.
@@ -777,12 +779,23 @@ def simulate_generations(
                 mating_tasks.append((simulator, p1, p2, crossover_dist, track_ancestry, track_blocks, track_junctions, gen_label, offspring_id))
                 offspring_counter += 1
 
-        num_processes = multiprocessing.cpu_count()
+        # Prevent BLAS/OpenMP oversubscription
+        os.environ.setdefault('OMP_NUM_THREADS', '1')
+        os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+        os.environ.setdefault('MKL_NUM_THREADS', '1')
+        os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
+
+        available = multiprocessing.cpu_count()
+        if max_processes is not None:
+                num_processes = min(max_processes, available)
+        else:
+                num_processes = min(16, available)  # default cap if not specified
+
         if verbose:
-            print(f"Using {num_processes} cores for parallel processing.")
-        
+                print(f"Using {num_processes} cores for parallel processing.")
+
         with multiprocessing.Pool(processes=num_processes) as pool:
-            results = pool.map(perform_cross_task, mating_tasks)
+                results = pool.map(perform_cross_task, mating_tasks)
             
         gen_hi_het = []
         for result in results:
@@ -937,7 +950,7 @@ def plot_triangle_hi_het(populations_dict, hi_het_data, output_prefix):
 
     plt.xlabel('Mean Hybrid Index (HI)')
     plt.ylabel('Mean Heterozygosity (HET)')
-    plt.legend()
+    #plt.legend()
     plt.grid(False)
     plt.savefig(f"{output_prefix}_triangle_plot.png", bbox_inches='tight')
     plt.close()
@@ -1036,30 +1049,42 @@ def _parse_crossover_distribution(dist_str):
     except (json.JSONDecodeError, ValueError) as e:
         # Re-raise the exception with a more descriptive message.
         raise ValueError(f"Invalid format for crossover distribution: {dist_str}. Expected a dictionary form string, e.g., '{{\"0\": 0.2, \"1\": 0.8}}'. Error: {e}")
-    
+
 def _parse_number_offspringribution(dist_str):
     """
     Parses a string representing an offspring distribution and validates it.
-    Input format: '{"0": 0.2, "1": 0.8}'
+    Accepts both JSON-style and Python-dict-style inputs.
+    Example valid inputs:
+        '{"0": 0.2, "1": 0.8}'
+        '{0: 0.2, 1: 0.8}'
     """
     try:
+        # First try JSON
         dist = json.loads(dist_str.replace("'", '"'))
-
-        if not isinstance(dist, dict):
-            raise ValueError("Distribution must be a dictionary.")
-
+    except json.JSONDecodeError:
+        # Fallback: try Python dict syntax
         try:
-            dist = {int(k): v for k, v in dist.items()}
-        except (ValueError, TypeError):
-            raise ValueError("All keys must be strings that represent integers.")
+            dist = ast.literal_eval(dist_str)
+        except Exception as e:
+            raise ValueError(
+                f"Invalid format for offspring distribution: {dist_str}. "
+                f"Could not parse as JSON or Python dict. Error: {e}"
+            )
 
-        if not np.isclose(sum(dist.values()), 1.0):
-            raise ValueError(f"Probabilities must sum to 1.0, but they sum to {sum(dist.values())}.")
+    if not isinstance(dist, dict):
+        raise ValueError("Distribution must be a dictionary.")
 
-        return dist
+    try:
+        dist = {int(k): float(v) for k, v in dist.items()}
+    except (ValueError, TypeError):
+        raise ValueError("All keys must be convertible to int and values to float.")
 
-    except (json.JSONDecodeError, ValueError) as e:
-        raise ValueError(f"Invalid format for offspring distribution: {dist_str}. Expected a dictionary form string, e.g., '{{\"0\": 0.2, \"1\": 0.8}}'. Error: {e}")
+    if not np.isclose(sum(dist.values()), 1.0):
+        raise ValueError(
+            f"Probabilities must sum to 1.0, but they sum to {sum(dist.values())}."
+        )
+
+    return dist
 
 def plot_full_pedigree(ancestry_data_df, output_path):
     """
@@ -1200,7 +1225,7 @@ Otherwise, the simulation defaults with internally generated data.""")
     general_params.add_argument("-npb", "--num_pop_b", type=int, default=10, help="Number of individuals in the starting Population B (default: 10).")
     general_params.add_argument("-no", "--num_offspring", type=str, default='{"1": 1.0}',
                                 help="""A probability distribution for number of offspring per mating pair.
-Input as a string dictionary, e.g., '{"0":0.2, "1": 0.7, "2": 0.1}'. (default: '{"1": 1.0}')""")
+Input as a string dictionary, e.g., '{"0":0.2, "1": 0.7, "2": 0.1}'. (default: '{"2": 1.0}')""")
     general_params.add_argument("-HG", "--hybrid_generations", type=int, default=1, help="Number of hybrid (HG) generations to simulate (default: 1).")
     general_params.add_argument("-BCA", "--backcross_A", type=int, default=0, help="Number of backcross generations to Population A (default: 0).")
     general_params.add_argument("-BCB", "--backcross_B", type=int, default=0, help="Number of backcross generations to Population B (default: 0).")
@@ -1208,7 +1233,8 @@ Input as a string dictionary, e.g., '{"0":0.2, "1": 0.7, "2": 0.1}'. (default: '
                                 help="""A probability distribution for crossovers per chromosome.
 Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0}')""")
     general_params.add_argument("--seed", type=int, default=None, help="A seed for the random number generator (default: None).")
-
+    general_params.add_argument("--threads", type=int, default=None, help="Number of CPU cores to use (default: min(16, available cores))")
+    
     # Parameters for internal defaults
     simple_group = parser.add_argument_group('Internal Default Parameters')
     simple_group.add_argument("-nm", "--num_marker", type=int, default=1000, help="Number of markers to simulate per chromosome (default: 1000).")
@@ -1216,7 +1242,7 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
     simple_group.add_argument("-afA", "--allele_freq_popA", type=str, default="1.0", help="Allele freq. of allele '0' for Pop A. Can be single value or comma-separated list (default: '1.0').")
     simple_group.add_argument("-afB", "--allele_freq_popB", type=str, default="0.0", help="Allele freq. of allele '0' for Pop B (default: '0.0').")
     simple_group.add_argument("-md", "--missing_data", type=str, default="0.0", help="Proportion of missing data per marker (default: '0.0').")
-    simple_group.add_argument('--influx', 
+    simple_group.add_argument('--influx',
                              nargs='+', 
                              metavar=('NUM_INDIVIDUALS', 'GENERATION_LABELS'), 
                              help="""Add a fixed number of individuals as an influx from specified generations.
@@ -1376,7 +1402,8 @@ Example: --influx 5 P_A P_B""")
         track_junctions=args.track_junctions,
         verbose=True,
         num_influx=num_influx,
-        influx_start_gen_label=influx_start_gen_label
+        influx_start_gen_label=influx_start_gen_label,
+        max_processes=args.threads
     )
 
     print("\nSimulation complete. Processing and saving outputs...")
