@@ -6,13 +6,13 @@ import os
 import json
 import networkx as nx
 import matplotlib.pyplot as plt
-import multiprocessing
+#import multiprocessing
 import ast
 import time
 import re
 from typing import Dict, List, Any, Optional
-import matplotlib.cm as cm
-import matplotlib.colors as mcolors
+#import matplotlib.cm as cm
+#import matplotlib.colors as mcolors
 
 # CLASSES
 class Genome:
@@ -78,8 +78,8 @@ class RecombinationSimulator:
         for marker in self.known_markers_data:
             marker_id = marker['marker_id']
             chromosome = marker['chromosome']
-            position_unit = marker['position_unit']
-            marker_map[marker_id] = {'chromosome': chromosome, 'position_unit': position_unit}
+            base_pair = marker['base_pair']
+            marker_map[marker_id] = {'chromosome': chromosome, 'base_pair': base_pair}
         return marker_map
 
     def _create_chromosome_structure(self):
@@ -96,7 +96,7 @@ class RecombinationSimulator:
         
         # Sort markers within each chromosome by position
         for chrom in chromosome_structure:
-            chromosome_structure[chrom].sort(key=lambda x: x['position_unit'])
+            chromosome_structure[chrom].sort(key=lambda x: x['base_pair'])
         return chromosome_structure
 
     def _get_chromosome_lengths_cm(self):
@@ -106,8 +106,8 @@ class RecombinationSimulator:
         lengths = {}
         for chrom, markers in self.chromosome_structure.items():
             if markers:
-                min_pos = markers[0]['position_unit']
-                max_pos = markers[-1]['position_unit']
+                min_pos = markers[0]['base_pair']
+                max_pos = markers[-1]['base_pair']
                 lengths[chrom] = max_pos - min_pos
             else:
                 lengths[chrom] = 0.0
@@ -165,7 +165,7 @@ class RecombinationSimulator:
         if not markers_on_chrom:
             return offspring_haplotype, []
             
-        marker_positions_cm = [m['position_unit'] for m in markers_on_chrom]
+        marker_positions_cm = [m['base_pair'] for m in markers_on_chrom]
         
         crossover_indices = []
         for pos_cm in crossover_positions_cm:
@@ -191,7 +191,7 @@ class RecombinationSimulator:
                 # Add the previous marker index to the junction data
                 junctions.append({
                     'chromosome': chromosome_id,
-                    'position_unit': crossover_positions_cm[i],
+                    'base_pair': crossover_positions_cm[i],
                     'event_type': 'crossover',
                     'prev_marker_idx': crossover_idx
                 })
@@ -260,7 +260,7 @@ class RecombinationSimulator:
                     junctions_data.append({
                         'individual_id': new_offspring_id,
                         'chromosome': chrom_id,
-                        'position_unit': pos['position_unit'],
+                        'base_pair': pos['base_pair'],
                         'event_type': 'crossover',
                         'generation': generation,
                         'prev_marker_idx': pos['prev_marker_idx']
@@ -347,7 +347,7 @@ class RecombinationSimulator:
                     'individual_id': individual.individual_id,
                     'marker_id': marker['marker_id'],
                     'chromosome': chrom_id,
-                    'position_unit': marker['position_unit'],
+                    'base_pair': marker['base_pair'],
                     'genotype': genotype
                 })
         return genotypes
@@ -369,12 +369,12 @@ class RecombinationSimulator:
             
             # Haplotype 1 blocks
             current_ancestry = hapA[0] # Ancestry of the first marker
-            start_pos = markers[0]['position_unit']
+            start_pos = markers[0]['base_pair']
             start_marker_id = markers[0]['marker_id'] # Get the start marker ID
             for i in range(1, len(hapA)):
                 if hapA[i] != current_ancestry:
                     # End the previous block and start a new one
-                    end_pos = markers[i-1]['position_unit']
+                    end_pos = markers[i-1]['base_pair']
                     end_marker_id = markers[i-1]['marker_id'] # Get the end marker ID
                     blocks_data.append({
                         'individual_id': individual.individual_id,
@@ -387,7 +387,7 @@ class RecombinationSimulator:
                         'ancestry': 'PA' if current_ancestry == 1 else 'PB'
                     })
                     current_ancestry = hapA[i]
-                    start_pos = markers[i]['position_unit']
+                    start_pos = markers[i]['base_pair']
                     start_marker_id = markers[i]['marker_id'] # Update start marker ID
             # Add the last block
             blocks_data.append({
@@ -395,7 +395,7 @@ class RecombinationSimulator:
                 'chromosome': chrom_id,
                 'haplotype': 1,
                 'start_cm': start_pos,
-                'end_cm': markers[-1]['position_unit'],
+                'end_cm': markers[-1]['base_pair'],
                 'start_marker_id': start_marker_id,
                 'end_marker_id': markers[-1]['marker_id'], # Get the end marker ID
                 'ancestry': 'PA' if current_ancestry == 1 else 'PB'
@@ -403,11 +403,11 @@ class RecombinationSimulator:
             
             # Repeat for Haplotype 2
             current_ancestry = hapB[0]
-            start_pos = markers[0]['position_unit']
+            start_pos = markers[0]['base_pair']
             start_marker_id = markers[0]['marker_id'] # Get the start marker ID
             for i in range(1, len(hapB)):
                 if hapB[i] != current_ancestry:
-                    end_pos = markers[i-1]['position_unit']
+                    end_pos = markers[i-1]['base_pair']
                     end_marker_id = markers[i-1]['marker_id'] # Get the end marker ID
                     blocks_data.append({
                         'individual_id': individual.individual_id,
@@ -420,14 +420,14 @@ class RecombinationSimulator:
                         'ancestry': 'PA' if current_ancestry == 1 else 'PB'
                     })
                     current_ancestry = hapB[i]
-                    start_pos = markers[i]['position_unit']
+                    start_pos = markers[i]['base_pair']
                     start_marker_id = markers[i]['marker_id'] # Update start marker ID
             blocks_data.append({
                 'individual_id': individual.individual_id,
                 'chromosome': chrom_id,
                 'haplotype': 2,
                 'start_cm': start_pos,
-                'end_cm': markers[-1]['position_unit'],
+                'end_cm': markers[-1]['base_pair'],
                 'start_marker_id': start_marker_id,
                 'end_marker_id': markers[-1]['marker_id'], # Get the end marker ID
                 'ancestry': 'PA' if current_ancestry == 1 else 'PB'
@@ -461,16 +461,16 @@ def create_default_markers(args, n_markers, n_chromosomes, pA_freq, pB_freq, md_
             marker_id = f"M{marker_counter+1}"
             
             if args.map_generate:
-                position_unit = random.uniform(0.0, 100.0)
+                base_pair = random.uniform(0.0, 100.0)
             else:
                 # Corrected uniform spacing for each chromosome
                 spacing_cm = 100.0 / (markers_per_chr_main + 1)
-                position_unit = (i + 1) * spacing_cm
+                base_pair = (i + 1) * spacing_cm
             
             marker_data = {
                 'marker_id': marker_id,
                 'chromosome': f'Chr{chrom}',
-                'position_unit': position_unit,
+                'base_pair': base_pair,
                 'allele_freq_A': pA_freq[marker_counter],
                 'allele_freq_B': pB_freq[marker_counter],
                 'md_prob': md_prob[marker_counter]
@@ -484,16 +484,16 @@ def create_default_markers(args, n_markers, n_chromosomes, pA_freq, pB_freq, md_
             marker_id = f"M{marker_counter+1}"
 
             if args.map_generate:
-                position_unit = random.uniform(0.0, 100.0)
+                base_pair = random.uniform(0.0, 100.0)
             else:
                 # Simple linear spacing for the remaining markers
                 spacing_cm = 100.0 / (remainder_markers + 1)
-                position_unit = (i + 1) * spacing_cm
+                base_pair = (i + 1) * spacing_cm
             
             marker_data = {
                 'marker_id': marker_id,
                 'chromosome': f'Chr{n_chromosomes}',
-                'position_unit': position_unit,
+                'base_pair': base_pair,
                 'allele_freq_A': pA_freq[marker_counter],
                 'allele_freq_B': pB_freq[marker_counter],
                 'missing_data_prob': md_prob[marker_counter]
@@ -540,15 +540,15 @@ def read_allele_freq_from_csv(file_path, args):
         df['chromosome'] = chrom_list
         print(f"Warning: 'chromosome' column not found. Assigning markers to {num_chrs} chromosomes.")
 
-    # OPTIONAL 'position_unit' check
-    if 'position_unit' not in df.columns:
+    # OPTIONAL 'base_pair' check
+    if 'base_pair' not in df.columns:
         num_markers = len(df)
         if args.map_generate:
-            df['position_unit'] = [random.uniform(0.0, 100.0) for _ in range(num_markers)]
+            df['base_pair'] = [random.uniform(0.0, 100.0) for _ in range(num_markers)]
             print("Generating random marker positions due to '--generate' flag.")
         else:
-            df['position_unit'] = np.linspace(0.0, 100.0, num_markers)
-            print("Warning: 'position_unit' column not found. Generating uniform positions.")
+            df['base_pair'] = np.linspace(0.0, 100.0, num_markers)
+            print("Warning: 'base_pair' column not found. Generating uniform positions.")
     
     # OPTIONAL 'missing_data_prob' check
     if 'missing_data_prob' not in df.columns:
@@ -745,10 +745,6 @@ def simulate_generations(
     blocks_data = []
     junctions_data = []
     
-    num_processes = max_processes if max_processes else multiprocessing.cpu_count()
-    if verbose:
-        print(f"Using {num_processes} CPU cores for parallel processing.")
-
     # A flag to track if we've reached the start of the immigration period.
     immigrate_active = False
     
@@ -760,14 +756,14 @@ def simulate_generations(
         cross_type = cross['type']
 
         if verbose:
-            print(f"\n--- Simulating Generation {gen_label} ({cross_type}) ---")
+            print(f"\n Simulating Generation {gen_label} ({cross_type}) ")
 
         # PARENT SELECTION LOGIC
         parent1_pop = populations_dict.get(parent1_label)
         parent2_pop = populations_dict.get(parent2_label)
         
         if not parent1_pop or not parent2_pop:
-            raise ValueError(f"Parent population for '{gen_label}' not found. Check your crossing plan or previous generations.")
+            raise ValueError(f"Parent population for '{gen_label}' not found. Check the crossing plan or previous generations.")
 
         parent_pool_1 = list(parent1_pop.individuals.values())
         parent_pool_2 = list(parent2_pop.individuals.values())
@@ -792,12 +788,12 @@ def simulate_generations(
             
             parent_pairs = list(zip(parent_pool_1, parent_pool_2))
 
-        # --- END OF PARENT SELECTION LOGIC ---
+        #  END OF PARENT SELECTION LOGIC 
 
         # Create the new population for this generation
         new_pop = Population(gen_label)
 
-        # --- CORRECTED IMMIGRATION LOGIC ---
+        #  CORRECTED IMMIGRATION LOGIC 
         # Check if the immigration flag should be activated
         if immigrate_start_gen_label and gen_label == immigrate_start_gen_label:
             immigrate_active = True
@@ -813,7 +809,7 @@ def simulate_generations(
             # Add them to the current generation's population
             new_pop.individuals.update(new_immigrants_a.individuals)
             new_pop.individuals.update(new_immigrants_b.individuals)
-        # --- END OF CORRECTED IMMIGRATION LOGIC ---
+        #  END OF CORRECTED IMMIGRATION LOGIC 
 
         mating_tasks = []
         offspring_counter = len(new_pop.individuals) # Start the counter after immigrants
@@ -839,24 +835,14 @@ def simulate_generations(
                 )
                 offspring_counter += 1
 
-        #Check if the number of tasks is too small for efficient multiprocessing
-        if len(mating_tasks) <= num_processes:
-            if verbose:
-                print("Total tasks are less than the number of processes. Running in single-thread mode.")
-            
-            flat_results = []
-            for task in mating_tasks:
-                flat_results.append(perform_cross_task(task))
-        else:
-            #Chunk the mating tasks into smaller batches for more efficient parallel processing
-            batch_size = 500
-            batched_mating_tasks = [mating_tasks[i:i + batch_size] for i in range(0, len(mating_tasks), batch_size)]
+        # Always run in single-thread mode
+        if verbose:
+            print("Running in single-thread mode.")
 
-            with multiprocessing.Pool(processes=num_processes) as pool:
-                results = pool.map(perform_batch_cross_task, batched_mating_tasks)
-            
-            flat_results = [item for sublist in results for item in sublist]
-        
+        flat_results = []
+        for task in mating_tasks:
+            flat_results.append(perform_cross_task(task))
+
         for result in flat_results:
             new_pop.add_individual(result['individual'])
             # Correctly collect hi_het data for each individual
@@ -869,7 +855,7 @@ def simulate_generations(
 
         populations_dict[gen_label] = new_pop
         
-        # --- REVISED MEMORY CLEANUP LOGIC ---
+        #  REVISED MEMORY CLEANUP LOGIC 
         # Get the list of all generation labels in the crossing plan
         all_gen_labels = [cross['generation_label'] for cross in crossing_plan]
 
@@ -1380,7 +1366,7 @@ Example: --immigrate 5 HG2""")
     tracking_group.add_argument("-tj", "--track_junctions", action="store_true",
                                  help="Tracks and outputs the positions of ancestry junctions (crossovers). This also produces a junctions CSV file.")
     tracking_group.add_argument("-gmap", "--map_generate", action="store_true",
-                                 help="""Randomly assigns marker positions. When using internal default parameters, this overrides uniform placement. This is used only if 'position_unit' is not in the input file.""")
+                                 help="""Randomly assigns marker positions. When using internal default parameters, this overrides uniform placement. This is used only if 'base_pair' is not in the input file.""")
     tracking_group.add_argument("-tp", "--triangle_plot", action="store_true",
                                  help="Generates a triangle plot of allele frequencies.")
     tracking_group.add_argument("-ol", "--output_locus", action="store_true", help="Outputs locus genotype data to CSV.")
