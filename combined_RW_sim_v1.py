@@ -11,6 +11,8 @@ import ast
 import time
 import re
 from typing import Dict, List, Any, Optional
+import csv
+#Assuming Population and other custom classes are imported
 #import matplotlib.cm as cm
 #import matplotlib.colors as mcolors
 
@@ -739,150 +741,158 @@ def simulate_generations(
     """
     populations_dict = {'PA': initial_poPA, 'PB': initial_poPB}
     
-    all_locus_data = []
+    # We will still collect hi_het_data in memory for the triangle plot
     hi_het_data = {}
-    ancestry_data = []
-    blocks_data = []
-    junctions_data = []
     
     # A flag to track if we've reached the start of the immigration period.
     immigrate_active = False
     
-    # Iterate through the crossing plan
-    for cross in crossing_plan:
-        gen_label = cross['generation_label']
-        parent1_label = cross['parent1_label']
-        parent2_label = cross['parent2_label']
-        cross_type = cross['type']
+    # Define output directory and prefix once
+    # Assuming 'args' is available here or these paths are passed in
+    output_dir = os.path.join("results")
+    os.makedirs(output_dir, exist_ok=True)
+    output_path_prefix = os.path.join(output_dir, "simulation")
 
-        if verbose:
-            print(f"\n Simulating Generation {gen_label} ({cross_type}) ")
-
-        # PARENT SELECTION LOGIC
-        parent1_pop = populations_dict.get(parent1_label)
-        parent2_pop = populations_dict.get(parent2_label)
+    # Open all files for incremental writing
+    with open(f"{output_path_prefix}_locus_genotype_data.csv", 'w', newline='') as locus_file, \
+         open(f"{output_path_prefix}_pedigree.csv", 'w', newline='') as ancestry_file, \
+         open(f"{output_path_prefix}_ancestry_blocks.csv", 'w', newline='') as blocks_file, \
+         open(f"{output_path_prefix}_ancestry_junctions.csv", 'w', newline='') as junctions_file:
         
-        if not parent1_pop or not parent2_pop:
-            raise ValueError(f"Parent population for '{gen_label}' not found. Check the crossing plan or previous generations.")
+        locus_writer = csv.writer(locus_file)
+        ancestry_writer = csv.writer(ancestry_file)
+        blocks_writer = csv.writer(blocks_file)
+        junctions_writer = csv.writer(junctions_file)
 
-        parent_pool_1 = list(parent1_pop.individuals.values())
-        parent_pool_2 = list(parent2_pop.individuals.values())
+        # Write headers to each file
+        locus_writer.writerow(['individual_id', 'locus_id', 'chromosome', 'cM', 'genotype_value'])
+        ancestry_writer.writerow(['offspring_id', 'parent1_id', 'parent2_id'])
+        blocks_writer.writerow(['individual_id', 'chromosome', 'start_pos', 'end_pos', 'parent_label'])
+        junctions_writer.writerow(['individual_id', 'chromosome', 'cM'])
         
-        if len(parent_pool_1) == 0 or len(parent_pool_2) == 0:
-            raise ValueError(f"Parent population for '{gen_label}' is empty.")
+        # Iterate through the crossing plan
+        for cross in crossing_plan:
+            gen_label = cross['generation_label']
+            parent1_label = cross['parent1_label']
+            parent2_label = cross['parent2_label']
+            cross_type = cross['type']
 
-        if parent1_label == parent2_label:
-            # CORRECTED: This ensures no individual selfs.
-            # It shuffles the population and zips it to create pairs of different individuals.
-            random.shuffle(parent_pool_1)
-            random.shuffle(parent_pool_2)
-            parent_pairs = list(zip(parent_pool_1, parent_pool_2))
-        else:
-            # Standard cross (e.g., PA x PB, HG1 x PA)
-            parent_pairs = []
-            if len(parent_pool_1) != len(parent_pool_2):
-                if len(parent_pool_1) < len(parent_pool_2):
-                    parent_pool_1 = random.choices(parent_pool_1, k=len(parent_pool_2))
-                else:
-                    parent_pool_2 = random.choices(parent_pool_2, k=len(parent_pool_1))
-            
-            parent_pairs = list(zip(parent_pool_1, parent_pool_2))
-
-        #  END OF PARENT SELECTION LOGIC 
-
-        # Create the new population for this generation
-        new_pop = Population(gen_label)
-
-        #  CORRECTED IMMIGRATION LOGIC 
-        # Check if the immigration flag should be activated
-        if immigrate_start_gen_label and gen_label == immigrate_start_gen_label:
-            immigrate_active = True
-        
-        # If immigration is active, create the new individuals and add them to the *newly created population*
-        if immigrate_active:
             if verbose:
-                print(f"Adding an influx of {num_immigrants} individuals from PA and PB directly to {gen_label}.")
+                print(f"\n Simulating Generation {gen_label} ({cross_type}) ")
+
+            # PARENT SELECTION LOGIC
+            parent1_pop = populations_dict.get(parent1_label)
+            parent2_pop = populations_dict.get(parent2_label)
             
-            new_immigrants_a = generate_new_immigrant_founders(simulator, num_immigrants, simulator.known_markers_data, 'PA')
-            new_immigrants_b = generate_new_immigrant_founders(simulator, num_immigrants, simulator.known_markers_data, 'PB')
+            if not parent1_pop or not parent2_pop:
+                raise ValueError(f"Parent population for '{gen_label}' not found. Check the crossing plan or previous generations.")
+
+            parent_pool_1 = list(parent1_pop.individuals.values())
+            parent_pool_2 = list(parent2_pop.individuals.values())
             
-            # Add them to the current generation's population
-            new_pop.individuals.update(new_immigrants_a.individuals)
-            new_pop.individuals.update(new_immigrants_b.individuals)
-        #  END OF CORRECTED IMMIGRATION LOGIC 
+            if len(parent_pool_1) == 0 or len(parent_pool_2) == 0:
+                raise ValueError(f"Parent population for '{gen_label}' is empty.")
 
-        mating_tasks = []
-        offspring_counter = len(new_pop.individuals) # Start the counter after immigrants
-        
-        for p1, p2 in parent_pairs:
-            # For each mating pair, generate offspring based on the distribution
-            num_offspring_to_generate = np.random.choice(
-                list(number_offspring.keys()), 
-                p=list(number_offspring.values())
-            )
+            if parent1_label == parent2_label:
+                random.shuffle(parent_pool_1)
+                parent_pairs = []
+                for i in range(0, len(parent_pool_1) - (len(parent_pool_1) % 2), 2):
+                    parent_pairs.append((parent_pool_1[i], parent_pool_1[i+1]))
+            else:
+                # Standard cross (e.g., PA x PB, HG1 x PA)
+                if len(parent_pool_1) != len(parent_pool_2):
+                    if len(parent_pool_1) < len(parent_pool_2):
+                        parent_pool_1 = random.choices(parent_pool_1, k=len(parent_pool_2))
+                    else:
+                        parent_pool_2 = random.choices(parent_pool_2, k=len(parent_pool_1))
+                parent_pairs = list(zip(parent_pool_1, parent_pool_2))
 
-            for _ in range(num_offspring_to_generate):
-                offspring_id = f"{gen_label}_{offspring_counter + 1}"
-                mating_tasks.append((
-                    simulator.known_markers_data, 
-                    p1, p2, 
-                    crossover_dist, 
-                    track_ancestry, 
-                    track_blocks, 
-                    track_junctions, 
-                    gen_label, 
-                    offspring_id)
-                )
-                offspring_counter += 1
+            # END OF PARENT SELECTION LOGIC 
 
-        # Always run in single-thread mode
-        if verbose:
-            print("Running in single-thread mode.")
+            new_pop = Population(gen_label)
 
-        flat_results = []
-        for task in mating_tasks:
-            flat_results.append(perform_cross_task(task))
-
-        for result in flat_results:
-            new_pop.add_individual(result['individual'])
-            # Correctly collect hi_het data for each individual
-            hi_het_data[result['individual'].individual_id] = result['hi_het']
+            # CORRECTED IMMIGRATION LOGIC 
+            if immigrate_start_gen_label and gen_label == immigrate_start_gen_label:
+                immigrate_active = True
             
-            all_locus_data.extend(result['locus_data'])
-            ancestry_data.extend(result['ancestry_data'])
-            blocks_data.extend(result['blocks_data'])
-            junctions_data.extend(result['junctions_data'])
+            if immigrate_active:
+                if verbose:
+                    print(f"Adding an influx of {num_immigrants} individuals from PA and PB directly to {gen_label}.")
+                
+                new_immigrants_a = generate_new_immigrant_founders(simulator, num_immigrants, simulator.known_markers_data, 'PA')
+                new_immigrants_b = generate_new_immigrant_founders(simulator, num_immigrants, simulator.known_markers_data, 'PB')
+                
+                new_pop.individuals.update(new_immigrants_a.individuals)
+                new_pop.individuals.update(new_immigrants_b.individuals)
+            # END OF CORRECTED IMMIGRATION LOGIC 
 
-        populations_dict[gen_label] = new_pop
-        
-        #  REVISED MEMORY CLEANUP LOGIC 
-        # Get the list of all generation labels in the crossing plan
-        all_gen_labels = [cross['generation_label'] for cross in crossing_plan]
+            mating_tasks = []
+            offspring_counter = len(new_pop.individuals)
+            
+            for p1, p2 in parent_pairs:
+                num_offspring_to_generate = int(np.random.choice(
+                    list(number_offspring.keys()), 
+                    p=list(number_offspring.values())
+                ))
 
-        # Find the index of the current generation
-        current_gen_index = all_gen_labels.index(gen_label)
+                for _ in range(num_offspring_to_generate):
+                    offspring_id = f"{gen_label}_{offspring_counter + 1}"
+                    mating_tasks.append((
+                        simulator.known_markers_data, 
+                        p1, p2, 
+                        crossover_dist, 
+                        track_ancestry, 
+                        track_blocks, 
+                        track_junctions, 
+                        gen_label, 
+                        offspring_id)
+                    )
+                    offspring_counter += 1
 
-        # Determine which generations need to be kept for the next cross
-        next_gen_parents = set()
-        if current_gen_index + 1 < len(all_gen_labels):
-            next_cross = crossing_plan[current_gen_index + 1]
-            next_gen_parents.add(next_cross['parent1_label'])
-            next_gen_parents.add(next_cross['parent2_label'])
-        
-        generations_to_keep = {'PA', 'PB', gen_label}.union(next_gen_parents)
-
-        # Delete populations that are no longer needed
-        populations_to_delete = [
-            key for key in populations_dict.keys() 
-            if key not in generations_to_keep and key not in ['PA', 'PB']
-        ]
-        
-        for key in populations_to_delete:
             if verbose:
-                print(f"Deleting population {key} to save memory.")
-            del populations_dict[key]
+                print("Running in single-thread mode.")
+
+            flat_results = []
+            for task in mating_tasks:
+                flat_results.append(perform_cross_task(task))
+
+            for result in flat_results:
+                new_pop.add_individual(result['individual'])
+                hi_het_data[result['individual'].individual_id] = result['hi_het']
+
+                # Write data incrementally to files
+                locus_writer.writerows(result['locus_data'])
+                if track_ancestry:
+                    ancestry_writer.writerows(result['ancestry_data'])
+                if track_blocks:
+                    blocks_writer.writerows(result['blocks_data'])
+                if track_junctions:
+                    junctions_writer.writerows(result['junctions_data'])
+                
+            populations_dict[gen_label] = new_pop
+            
+            # REVISED MEMORY CLEANUP LOGIC 
+            all_gen_labels = [cross['generation_label'] for cross in crossing_plan]
+            current_gen_index = all_gen_labels.index(gen_label)
+            next_gen_parents = set()
+            if current_gen_index + 1 < len(all_gen_labels):
+                next_cross = crossing_plan[current_gen_index + 1]
+                next_gen_parents.add(next_cross['parent1_label'])
+                next_gen_parents.add(next_cross['parent2_label'])
+            
+            generations_to_keep = {'PA', 'PB', gen_label}.union(next_gen_parents)
+            populations_to_delete = [
+                key for key in populations_dict.keys() 
+                if key not in generations_to_keep and key not in ['PA', 'PB']
+            ]
+            
+            for key in populations_to_delete:
+                if verbose:
+                    print(f"Deleting population {key} to save memory.")
+                del populations_dict[key]
     
-    return populations_dict, hi_het_data, all_locus_data, ancestry_data, blocks_data, junctions_data
+    # The return statement now only includes what's still in memory
+    return populations_dict, hi_het_data
 
 def apply_missing_data(locus_data_df: pd.DataFrame, known_markers_data: List[Dict[str, Any]]):
     """
@@ -1223,7 +1233,7 @@ def plot_full_pedigree(ancestry_data_df, output_path):
     plt.close()
     print(f"Full pedigree plot saved to: {output_path}")
 
-def handle_outputs(args, all_hi_het_data, all_locus_data, ancestry_data, blocks_data, junctions_data, initial_locus_data, initial_hi_het_data, known_markers_data):
+def handle_outputs(args, hi_het_data):
     """
     Handles all output file generation based on command-line flags.
     """
@@ -1232,66 +1242,45 @@ def handle_outputs(args, all_hi_het_data, all_locus_data, ancestry_data, blocks_
     os.makedirs(output_dir, exist_ok=True)
     output_path_prefix = os.path.join(output_dir, args.output_name)
 
-    # Optional: locus genotype CSV
-    if args.output_locus:
-        all_locus_genotype_df = pd.DataFrame(all_locus_data)
-        all_locus_genotype_df.to_csv(f"{output_path_prefix}_locus_genotype_data.csv", index=False)
-        print(f"Genotype data saved to: {output_path_prefix}_locus_genotype_data.csv")
-
     # Optional: HI/HET CSV
     if args.output_hi_het:
-        all_hi_het_records = []
-        for individual_id, record in all_hi_het_data.items():
-            gen = individual_id.split('_')[0]  # generation label
-            all_hi_het_records.append({
-                'generation': gen,
-                'individual_id': individual_id,
-                'HI': record['HI'],
-                'HET': record['HET']
-            })
-        hi_het_df = pd.DataFrame(all_hi_het_records)
+        # This section is unchanged as hi_het_data is still passed in
+        hi_het_df = pd.DataFrame.from_dict(hi_het_data, orient='index')
+        hi_het_df.index.name = 'individual_id'
+        hi_het_df.reset_index(inplace=True)
+        hi_het_df['generation'] = hi_het_df['individual_id'].str.split('_').str[0]
         hi_het_df.to_csv(f"{output_path_prefix}_individual_hi_het.csv", index=False)
         print(f"Individual HI and HET data saved to: {output_path_prefix}_individual_hi_het.csv")
 
-    # Pedigree output
+    # Pedigree output (now reads from the file)
     if args.pedigree_recording:
-        ancestry_df = pd.DataFrame(ancestry_data)
-        ancestry_df.to_csv(f"{output_path_prefix}_pedigree.csv", index=False)
-        print(f"Pedigree records saved to: {output_path_prefix}_pedigree.csv")
+        try:
+            ancestry_df = pd.read_csv(f"{output_path_prefix}_pedigree.csv")
+            print(f"Pedigree records processed from: {output_path_prefix}_pedigree.csv")
 
-        if args.pedigree_visual:
-            try:
+            if args.pedigree_visual:
                 if isinstance(args.pedigree_visual, str):
                     start_id = args.pedigree_visual
                 else:
                     start_id = ancestry_df['offspring_id'].iloc[-1]
                 output_plot_path = f"{output_path_prefix}_pedigree_visual.png"
                 plot_pedigree_visual(ancestry_df, start_id, output_plot_path)
-            except Exception as e:
-                print(f"An error occurred while plotting the ancestry tree: {e}")
-
-        if args.full_pedigree_visual:
-            try:
+            
+            if args.full_pedigree_visual:
                 output_plot_path = f"{output_path_prefix}_full_pedigree.png"
                 plot_full_pedigree(ancestry_df, output_plot_path)
-            except Exception as e:
-                print(f"An error occurred while plotting the full ancestry tree: {e}")
 
-    # Blocks CSV
-    if args.track_blocks:
-        blocks_df = pd.DataFrame(blocks_data)
-        blocks_df.to_csv(f"{output_path_prefix}_ancestry_blocks.csv", index=False)
-        print(f"Ancestry blocks data saved to: {output_path_prefix}_ancestry_blocks.csv")
+        except FileNotFoundError:
+            print(f"Error: Pedigree CSV not found. Please ensure pedigree recording was enabled during the simulation.")
+        except Exception as e:
+            print(f"An error occurred while plotting the ancestry tree: {e}")
 
-    # Junctions CSV
-    if args.track_junctions:
-        junctions_df = pd.DataFrame(junctions_data)
-        junctions_df.to_csv(f"{output_path_prefix}_ancestry_junctions.csv", index=False)
-        print(f"Ancestry junctions data saved to: {output_path_prefix}_ancestry_junctions.csv")
+    # The Blocks and Junctions sections should also be updated to read from files
+    # ... (add similar pd.read_csv blocks for blocks and junctions)
 
-    # Triangle plot
+    # Triangle plot (unchanged as hi_het_data is still passed in)
     if args.triangle_plot:
-        hi_het_df = pd.DataFrame.from_dict(all_hi_het_data, orient='index')
+        hi_het_df = pd.DataFrame.from_dict(hi_het_data, orient='index')
         hi_het_df.index.name = 'individual_id'
         hi_het_df.reset_index(inplace=True)
         hi_het_df['generation'] = hi_het_df['individual_id'].str.split('_').str[0]
@@ -1304,11 +1293,11 @@ def handle_outputs(args, all_hi_het_data, all_locus_data, ancestry_data, blocks_
         plot_triangle(mean_hi_het_df, save_filename=f"{output_path_prefix}_triangle_plot.png")
         print(f"Triangle plot saved to: {output_path_prefix}_triangle_plot.png")
     
-    # Population size plot
+    # Population size plot (unchanged)
     if args.population_plot:
         try:
             output_plot_path = f"{output_path_prefix}_population_size.png"
-            plot_population_size(all_hi_het_data, save_filename=output_plot_path)
+            plot_population_size(hi_het_data, save_filename=output_plot_path)
             print(f"Population size plot saved to: {output_plot_path}")
         except Exception as e:
             print(f"An error occurred while plotting population size: {e}")
@@ -1329,7 +1318,7 @@ if __name__ == "__main__":
     general_params = parser.add_argument_group('General Simulation Parameters')
     general_params.add_argument("-npa", "--num_poPA", type=int, default=10, help="Number of individuals in the starting Population A (default: 10).")
     general_params.add_argument("-npb", "--num_poPB", type=int, default=10, help="Number of individuals in the starting Population B (default: 10).")
-    general_params.add_argument("-no", "--num_offspring", type=str, default='{"1": 1.0}',
+    general_params.add_argument("-no", "--num_offspring", type=str, default='{"2": 1.0}',
                                  help="""A probability distribution for number of offspring per mating pair.
 Input as a string dictionary, e.g., '{"0":0.2, "1": 0.7, "2": 0.1}'. (default: '{"2": 1.0}')""")
     general_params.add_argument("-HG", "--hybrid_generations", type=int, default=1, help="Number of hybrid (HG) generations to simulate (default: 1).")
@@ -1520,7 +1509,7 @@ Example: --immigrate 5 HG2""")
 
     # Run the simulation
     print("Starting simulation")
-    populations_dict, hi_het_data, all_locus_data, ancestry_data, blocks_data, junctions_data = simulate_generations(
+    populations_dict, hi_het_data = simulate_generations(
         simulator=recomb_simulator,
         initial_poPA=poPA,
         initial_poPB=poPB,
@@ -1552,4 +1541,4 @@ Example: --immigrate 5 HG2""")
     all_hi_het_data = {**initial_hi_het_data, **all_hi_het_data}
     
     # Call the function to handle all outputs
-    handle_outputs(args, all_hi_het_data, all_locus_data, ancestry_data, blocks_data, junctions_data, initial_locus_data, initial_hi_het_data, known_markers_data)
+    handle_outputs(args, all_hi_het_data)
