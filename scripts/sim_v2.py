@@ -1366,7 +1366,7 @@ Example: --immigrate 5 HG2""")
 
     print(f"\nStarting Simulation Replicate {args.replicate_id}")
 
-        # Set the random seed for this replicate to ensure unique outputs
+    # Set the random seed for this replicate to ensure unique outputs
     current_seed = args.seed if args.seed is not None else int(time.time()) + args.replicate_id
     print(f"Setting random seed to: {current_seed}")
     random.seed(current_seed)
@@ -1375,196 +1375,193 @@ Example: --immigrate 5 HG2""")
     # Determine which mode to run in and get marker data
     known_markers_data = []
 
-        # Conditional input file logic
+    # Conditional input file logic
     if args.file:
         print(f"\nRunning with input file: {args.file}.")
         try:
             known_markers_data = read_allele_freq_from_csv(args.file, args)
         except (FileNotFoundError, ValueError) as e:
-                print(f"Error reading input file: {e}")
-                exit(1)
-        else:
-            print("\nRunning with given parameters.")
-            try:
-                pA_freqs = parse_list_or_value(args.allele_freq_popA, args.num_marker)
-                pB_freqs = parse_list_or_value(args.allele_freq_popB, args.num_marker)
-                md_probs = parse_list_or_value(args.missing_data, args.num_marker)
-            except ValueError as e:
-                print(f"Error with parameters: {e}")
-                exit(1)
-                
-            known_markers_data = create_default_markers(
-                args=args,
-                n_markers=args.num_marker,
-                n_chromosomes=args.num_chrs,
-                pA_freq=pA_freqs,
-                pB_freq=pB_freqs,
-                md_prob=md_probs,
-            )
-
-        # Start the recombination simulator
-        recomb_simulator = RecombinationSimulator(known_markers_data=known_markers_data, num_chromosomes=args.num_chrs)
-
-        # Create the ancestral populations
-        print("\nCreating initial populations (PA and PB)")
-        poPA = create_initial_populations_integrated(recomb_simulator, args.num_poPA, known_markers_data, 'PA')
-        poPB = create_initial_populations_integrated(recomb_simulator, args.num_poPB, known_markers_data, 'PB')
-        
-        ''' Commented out as takes up a lot of memory 
-        # Create a list to hold all genotype data
-        all_genotype_data = []
-        
-        # Get and store genotypes for all individuals in Population A
-        for individual in poPA.individuals.values():
-            genotypes = recomb_simulator.get_genotypes(individual)
-            all_genotype_data.extend(genotypes)
-
-        # Get and store genotypes for all individuals in Population B
-        for individual in poPB.individuals.values():
-            genotypes = recomb_simulator.get_genotypes(individual)
-            all_genotype_data.extend(genotypes)
-
-        # Convert the list of dictionaries to a pandas DataFrame
-        df_genotypes = pd.DataFrame(all_genotype_data)
-
-        # Export the DataFrame to a CSV file
-        parent_genotypes_dir = os.path.join(args.output_dir, "results")
-        os.makedirs(parent_genotypes_dir, exist_ok=True)
-        
-        # New: Use a dynamic filename to avoid overwriting
-        output_file = os.path.join(parent_genotypes_dir, f"parent_genotypes_rep_{args.replicate_id}.csv")
-        df_genotypes.to_csv(output_file, index=False)
-
-        print(f"\nGenotype data for PA and PB exported to {output_file}")
-
-        print(f"\nGenotype data for PA and PB exported to {output_file}")
-        '''
-
-        # Collect initial founder locus data
-        initial_locus_data = []
-        for ind in poPA.individuals.values():
-            initial_locus_data.extend(recomb_simulator.get_genotypes(ind))
-        for ind in poPB.individuals.values():
-            initial_locus_data.extend(recomb_simulator.get_genotypes(ind))
-        
-        # Convert to DataFrame to apply missing data
-        initial_locus_df = pd.DataFrame(initial_locus_data)
-
-        # The hi_het data is collected in a single, flat dictionary, matching the output of simulate_generations
-        initial_hi_het_data = {}
-        
-        for ind in poPA.individuals.values():
-            hi, het = recomb_simulator.calculate_hi_het(ind)
-            initial_hi_het_data[ind.individual_id] = {'HI': hi, 'HET': het}
-        
-        for ind in poPB.individuals.values():
-            hi, het = recomb_simulator.calculate_hi_het(ind)
-            initial_hi_het_data[ind.individual_id] = {'HI': hi, 'HET': het}
-            
-        initial_locus_data = initial_locus_df.to_dict('records')
-
-        # Determine crossover mode and distribution
+            print(f"Error reading input file: {e}")
+            exit(1)
+    else:
+        # This code block will run if no --file is provided.
+        print("\nRunning with given parameters.")
         try:
-            crossover_dist = _parse_crossover_distribution(args.crossover_dist)
-            # Add the number_offspring parsing right here
-            number_offspring = _parse_number_offspringribution(args.num_offspring)
-
-            print(f"Crossover distribution set to: {crossover_dist}")
-            print(f"Offspring distribution set to: {number_offspring}")
-
+            pA_freqs = parse_list_or_value(args.allele_freq_popA, args.num_marker)
+            pB_freqs = parse_list_or_value(args.allele_freq_popB, args.num_marker)
+            md_probs = parse_list_or_value(args.missing_data, args.num_marker)
         except ValueError as e:
-            print(f"Error parsing distributions: {e}")
+            print(f"Error with parameters: {e}")
             exit(1)
             
-        if args.immigrate:
-            try:
-                num_immigrants = int(args.immigrate[0])
-                immigrate_start_gen_label = args.immigrate[1]
-                if num_immigrants < 0:
-                    raise ValueError("Number of individuals cannot be negative.")
-                print(f"Immigration set to {num_immigrants} new individuals starting from generation: {immigrate_start_gen_label} and continuing.")
-            except (ValueError, IndexError) as e:
-                print(f"Error parsing --immigrate flag. Please check the format: --immigrate NUM_INDIVIDUALS START_GEN_LABEL")
-                print(f"Original error: {e}")
-                exit(1)
-        else:
-            num_immigrants = 0
-            immigrate_start_gen_label = None
-
-    # Build the full crossing plan using the new flags
-        print("Building crossing plan")
-        crossing_plan = []
-
-        # Hybrid generations (HG1, HG2, etc.)
-        if args.hybrid_generations > 0:
-            crossing_plan.extend(build_hybrid_generations(num_generations=args.hybrid_generations))
-
-        # Backcross generations to Pop A (BC1A, BC2A, etc.)
-        if args.backcross_A > 0:
-            # The backcross will start from the last hybrid generation created.
-            # If hybrid_generations is 0, the starting point is HG1.
-            initial_hybrid_label = f'HG{args.hybrid_generations}' if args.hybrid_generations > 0 else 'HG1'
-            crossing_plan.extend(build_backcross_generations(
-                base_name='BC', 
-                initial_hybrid_gen_label=initial_hybrid_label, 
-                pure_pop_label='PA', 
-                num_backcross_generations=args.backcross_A
-            ))
-
-        # Backcross generations to Pop B (BC1B, BC2B, etc.)
-        if args.backcross_B > 0:
-            # The backcross will start from the last hybrid generation created.
-            # If hybrid_generations is 0, the starting point is HG1.
-            initial_hybrid_label = f'HG{args.hybrid_generations}' if args.hybrid_generations > 0 else 'HG1'
-            crossing_plan.extend(build_backcross_generations(
-                base_name='BC', 
-                initial_hybrid_gen_label=initial_hybrid_label, 
-                pure_pop_label='PB', 
-                num_backcross_generations=args.backcross_B
-            ))
-
-        # Start the timer
-        start_time = time.time()
-
-        # Run the simulation
-        print("Starting simulation")
-        populations_dict, hi_het_data = simulate_generations(
-            simulator=recomb_simulator,
-            initial_poPA=poPA,
-            initial_poPB=poPB,
-            crossing_plan=crossing_plan,
-            number_offspring=number_offspring,
-            crossover_dist=crossover_dist,
-            track_ancestry=args.pedigree_recording,
-            track_blocks=args.track_blocks,
-            track_junctions=args.track_junctions,
-            output_locus=args.output_locus, 
-            verbose=True,
-            num_immigrants=num_immigrants,
-            immigrate_start_gen_label=immigrate_start_gen_label,
-            max_processes=args.threads,
-            args=args 
+        known_markers_data = create_default_markers(
+            args=args,
+            n_markers=args.num_marker,
+            n_chromosomes=args.num_chrs,
+            pA_freq=pA_freqs,
+            pB_freq=pB_freqs,
+            md_prob=md_probs,
         )
 
-        # End the timer and calculate the elapsed time
-        end_time = time.time()
-        elapsed_time = end_time - start_time
-        print(f"\nSimulation {args.replicate_id} complete. Runtime: {elapsed_time:.2f} seconds")
+    # Start the recombination simulator
+    recomb_simulator = RecombinationSimulator(known_markers_data=known_markers_data, num_chromosomes=args.num_chrs)
+
+    # Create the ancestral populations
+    print("\nCreating initial populations (PA and PB)")
+    poPA = create_initial_populations_integrated(recomb_simulator, args.num_poPA, known_markers_data, 'PA')
+    poPB = create_initial_populations_integrated(recomb_simulator, args.num_poPB, known_markers_data, 'PB')
     
-        # Create a temporary dictionary for all HI/HET data
-        all_hi_het_data = {}
-        all_hi_het_data.update(initial_hi_het_data)
-        all_hi_het_data.update(hi_het_data)
-        all_hi_het_data = {**initial_hi_het_data, **all_hi_het_data}
+    #Commented out as takes up a lot of memory 
+    # Create a list to hold all genotype data
+    all_genotype_data = []
+    
+    # Get and store genotypes for all individuals in Population A
+    for individual in poPA.individuals.values():
+        genotypes = recomb_simulator.get_genotypes(individual)
+        all_genotype_data.extend(genotypes)
+
+    # Get and store genotypes for all individuals in Population B
+    for individual in poPB.individuals.values():
+        genotypes = recomb_simulator.get_genotypes(individual)
+        all_genotype_data.extend(genotypes)
+
+    # Convert the list of dictionaries to a pandas DataFrame
+    df_genotypes = pd.DataFrame(all_genotype_data)
+
+    # Export the DataFrame to a CSV file
+    parent_genotypes_dir = os.path.join(args.output_dir, "results")
+    os.makedirs(parent_genotypes_dir, exist_ok=True)
+    
+    # New: Use a dynamic filename to avoid overwriting
+    output_file = os.path.join(parent_genotypes_dir, f"parent_genotypes_rep_{args.replicate_id}.csv")
+    df_genotypes.to_csv(output_file, index=False)
+
+    print(f"\nGenotype data for PA and PB exported to {output_file}")
+    
+    # Collect initial founder locus data
+    initial_locus_data = []
+    for ind in poPA.individuals.values():
+        initial_locus_data.extend(recomb_simulator.get_genotypes(ind))
+    for ind in poPB.individuals.values():
+        initial_locus_data.extend(recomb_simulator.get_genotypes(ind))
+    
+    # Convert to DataFrame to apply missing data
+    initial_locus_df = pd.DataFrame(initial_locus_data)
+
+    # The hi_het data is collected in a single, flat dictionary, matching the output of simulate_generations
+    initial_hi_het_data = {}
+    
+    for ind in poPA.individuals.values():
+        hi, het = recomb_simulator.calculate_hi_het(ind)
+        initial_hi_het_data[ind.individual_id] = {'HI': hi, 'HET': het}
+    
+    for ind in poPB.individuals.values():
+        hi, het = recomb_simulator.calculate_hi_het(ind)
+        initial_hi_het_data[ind.individual_id] = {'HI': hi, 'HET': het}
+            
+    initial_locus_data = initial_locus_df.to_dict('records')
+
+    # Determine crossover mode and distribution
+    try:
+        crossover_dist = _parse_crossover_distribution(args.crossover_dist)
+        # Add the number_offspring parsing right here
+        number_offspring = _parse_number_offspringribution(args.num_offspring)
+
+        print(f"Crossover distribution set to: {crossover_dist}")
+        print(f"Offspring distribution set to: {number_offspring}")
+
+    except ValueError as e:
+        print(f"Error parsing distributions: {e}")
+        exit(1)
+            
+    if args.immigrate:
+        try:
+            num_immigrants = int(args.immigrate[0])
+            immigrate_start_gen_label = args.immigrate[1]
+            if num_immigrants < 0:
+                raise ValueError("Number of individuals cannot be negative.")
+            print(f"Immigration set to {num_immigrants} new individuals starting from generation: {immigrate_start_gen_label} and continuing.")
+        except (ValueError, IndexError) as e:
+            print(f"Error parsing --immigrate flag. Please check the format: --immigrate NUM_INDIVIDUALS START_GEN_LABEL")
+            print(f"Original error: {e}")
+            exit(1)
+    else:
+        num_immigrants = 0
+        immigrate_start_gen_label = None
+
+    # Build the full crossing plan using the new flags
+    print("Building crossing plan")
+    crossing_plan = []
+
+    # Hybrid generations (HG1, HG2, etc.)
+    if args.hybrid_generations > 0:
+        crossing_plan.extend(build_hybrid_generations(num_generations=args.hybrid_generations))
+
+    # Backcross generations to Pop A (BC1A, BC2A, etc.)
+    if args.backcross_A > 0:
+        # The backcross will start from the last hybrid generation created.
+        # If hybrid_generations is 0, the starting point is HG1.
+        initial_hybrid_label = f'HG{args.hybrid_generations}' if args.hybrid_generations > 0 else 'HG1'
+        crossing_plan.extend(build_backcross_generations(
+            base_name='BC', 
+            initial_hybrid_gen_label=initial_hybrid_label, 
+            pure_pop_label='PA', 
+            num_backcross_generations=args.backcross_A
+        ))
+
+    # Backcross generations to Pop B (BC1B, BC2B, etc.)
+    if args.backcross_B > 0:
+        # The backcross will start from the last hybrid generation created.
+        # If hybrid_generations is 0, the starting point is HG1.
+        initial_hybrid_label = f'HG{args.hybrid_generations}' if args.hybrid_generations > 0 else 'HG1'
+        crossing_plan.extend(build_backcross_generations(
+            base_name='BC', 
+            initial_hybrid_gen_label=initial_hybrid_label, 
+            pure_pop_label='PB', 
+            num_backcross_generations=args.backcross_B
+        ))
+
+    # Start the timer
+    start_time = time.time()
+
+    # Run the simulation
+    print("Starting simulation")
+    populations_dict, hi_het_data = simulate_generations(
+        simulator=recomb_simulator,
+        initial_poPA=poPA,
+        initial_poPB=poPB,
+        crossing_plan=crossing_plan,
+        number_offspring=number_offspring,
+        crossover_dist=crossover_dist,
+        track_ancestry=args.pedigree_recording,
+        track_blocks=args.track_blocks,
+        track_junctions=args.track_junctions,
+        output_locus=args.output_locus, 
+        verbose=True,
+        num_immigrants=num_immigrants,
+        immigrate_start_gen_label=immigrate_start_gen_label,
+        max_processes=args.threads,
+        args=args 
+    )
+
+    # End the timer and calculate the elapsed time
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    print(f"\nSimulation {args.replicate_id} complete. Runtime: {elapsed_time:.2f} seconds")
+    
+    # Create a temporary dictionary for all HI/HET data
+    all_hi_het_data = {}
+    all_hi_het_data.update(initial_hi_het_data)
+    all_hi_het_data = {**initial_hi_het_data, **hi_het_data}
 
     # New: Modify the output name to include the replicate ID
-        original_output_name = args.output_name
-        args.output_name = f"{original_output_name}_rep_{args.replicate_id}"
+    original_output_name = args.output_name
+    args.output_name = f"{original_output_name}_rep_{args.replicate_id}"
 
-        # Call your outputs handler, which will now use the new name
-        handle_outputs(args, all_hi_het_data)
-        
-        # New: Reset the output name for the next iteration
-        args.output_name = original_output_name
+    # Call your outputs handler, which will now use the new name
+    handle_outputs(args, all_hi_het_data)
     
-        print(f"Finished Simulation Replicate {args.replicate_id}")
+    # New: Reset the output name for the next iteration
+    args.output_name = original_output_name
+    
+    print(f"Finished Simulation Replicate {args.replicate_id}")
