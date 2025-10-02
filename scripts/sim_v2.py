@@ -1319,7 +1319,7 @@ Input as a string dictionary, e.g., '{"0":0.2, "1": 0.7, "2": 0.1}'. (default: '
 Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0}')""")
     general_params.add_argument("--seed", type=int, default=None, help="A seed for the random number generator (default: None).")
     general_params.add_argument("-nreps", "--num_replicates", type=int, default=1, help="Number of simulation replicates to run (default:1))")
-    general_params.add_argument("-repid", "--replicate_id", type=int, default=1, help='The ID of the current replicate for output filenames.')
+    general_params.add_argument("-repid", "--replicate_id", type=int, required=True, help='The ID of the current replicate for output filenames.')
     general_params.add_argument("--threads", type=int, default=None, help="Number of CPU cores to use (default: min(16, available cores))")
     
     # Parameters for internal defaults
@@ -1409,10 +1409,11 @@ Example: --immigrate 5 HG2""")
         print("\nCreating initial populations (PA and PB)")
         poPA = create_initial_populations_integrated(recomb_simulator, args.num_poPA, known_markers_data, 'PA')
         poPB = create_initial_populations_integrated(recomb_simulator, args.num_poPB, known_markers_data, 'PB')
-
+        
+        ''' Commented out as takes up a lot of memory 
         # Create a list to hold all genotype data
         all_genotype_data = []
-
+        
         # Get and store genotypes for all individuals in Population A
         for individual in poPA.individuals.values():
             genotypes = recomb_simulator.get_genotypes(individual)
@@ -1437,6 +1438,7 @@ Example: --immigrate 5 HG2""")
         print(f"\nGenotype data for PA and PB exported to {output_file}")
 
         print(f"\nGenotype data for PA and PB exported to {output_file}")
+        '''
 
         # Collect initial founder locus data
         initial_locus_data = []
