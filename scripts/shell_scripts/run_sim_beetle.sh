@@ -1,4 +1,5 @@
 #!/bin/bash
+#SBATCH --mem=32G
 
 # Exit immediately if a command exits with a non-zero status.
 set -e
@@ -37,8 +38,8 @@ for ((i=$1; i<=$2; i++)); do
         --file "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/beetle_input.csv" \
         -npa 100 \
         -npb 100 \
-        -HG 100 \
-        -nc 58 \
+        -HG 3000 \
+        -nc 10 \
         -oh \
         -gmap
 
