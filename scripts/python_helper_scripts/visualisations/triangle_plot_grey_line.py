@@ -2,12 +2,13 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 import re
+import argparse # <-- NEW: Added argparse for command-line arguments
 from typing import Optional
 
 def plot_simulation_path(
     mean_hi_het_df: pd.DataFrame, 
     save_filename: Optional[str] = None,
-    highlight_gen: Optional[int] = None # Added a new optional parameter
+    highlight_gen: Optional[int] = None
 ):
     """
     Plots the full path of the mean HI vs. HET from the first generation onwards,
@@ -95,7 +96,7 @@ def plot_simulation_path(
                        color=color, s=80, edgecolors='black', linewidth=1.5, zorder=3, label=label_text)
             
             ax.text(mean_data['mean_HI'] + 0.01, mean_data['mean_HET'] + 0.01, label_text,
-                    fontsize=10, color='black', ha='left', va='bottom', zorder=4)
+                      fontsize=10, color='black', ha='left', va='bottom', zorder=4)
 
     # Plot the triangle edges
     triangle_edges = [
@@ -118,29 +119,56 @@ def plot_simulation_path(
     else:
         plt.show()
 
-# Main script execution
+# Main script execution - CORRECTED TO USE ARGPARSE
 if __name__ == "__main__":
-    input_file = r"C:\Users\sg802\Documents\git_clone\hybrid_sim_project\simulation_outputs\replicates\results\results_rep_10_individual_hi_het.csv"
-    output_filename = "simulation_outputs/results/triangle_plot_line_path.png"
+    
+    # --- 1. Setup Argument Parser ---
+    parser = argparse.ArgumentParser(description="Generate a HI vs HET path plot for simulation output.")
+    
+    parser.add_argument(
+        '--input_file', 
+        type=str, 
+        required=True,
+        help='Path to the input CSV file containing individual HI/HET data (e.g., results_rep_X_individual_hi_het.csv).'
+    )
+    
+    parser.add_argument(
+        '--output_file', 
+        type=str, 
+        required=True, # Made required since the shell script always provides it
+        help='Path and filename to save the resulting PNG plot.'
+    )
+    
+    parser.add_argument(
+        '--highlight_gen', 
+        type=int, 
+        default=None, 
+        help='The specific generation number (e.g., 1539) to highlight in red.'
+    )
 
-    # Specify the generation number you want to highlight here
-    # For example, to highlight generation 100:
-    highlight_generation_number = 1539
+    # --- 2. Parse arguments ---
+    args = parser.parse_args()
 
+    # --- 3. Run plotting logic ---
     try:
-        if not os.path.exists(input_file):
-            print(f"Error: The input file '{input_file}' was not found.")
-            print("Please ensure the path is correct or run your simulation script.")
+        # We now use the arguments provided by the shell script (args.input_file)
+        if not os.path.exists(args.input_file):
+            print(f"Error: The input file '{args.input_file}' was not found.")
+            print("Please ensure the path passed by the shell script is correct.")
         else:
-            hi_het_df = pd.read_csv(input_file)
+            hi_het_df = pd.read_csv(args.input_file)
             mean_hi_het_df = hi_het_df.groupby('generation').agg(
                 mean_HI=('HI', 'mean'),
                 mean_HET=('HET', 'mean')
             )
             
-            # Pass the highlight_generation_number to the plotting function
-            plot_simulation_path(mean_hi_het_df, output_filename, highlight_gen=highlight_generation_number)
-            print(f"Plot of simulation path saved to: {output_filename}")
+            # Pass the arguments to the plotting function
+            plot_simulation_path(
+                mean_hi_het_df, 
+                save_filename=args.output_file, 
+                highlight_gen=args.highlight_gen
+            )
+            print(f"Plot of simulation path saved to: {args.output_file}")
             
     except Exception as e:
         print(f"An error occurred during script execution: {e}")
