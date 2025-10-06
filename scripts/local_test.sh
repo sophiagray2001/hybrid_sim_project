@@ -50,8 +50,8 @@ for ((i=$1; i<=$2; i++)); do
     
     mkdir -p "${REPLICATE_DIR_SCRATCH}/results"
 
-    # Step 1: Run the Genetic Simulation (using LOCAL VENV Python)
-    "$VENV_PYTHON_EXE" "$SIM_SCRIPT" \
+    # Step 1: Run the Genetic Simulation (using LOCAL VENV Python, added -u for consistency)
+    "$VENV_PYTHON_EXE" -u "$SIM_SCRIPT" \
         --output_dir "$REPLICATE_DIR_SCRATCH" \
         --replicate_id "$i" \
         --file "./beetle_input.csv" \
@@ -64,26 +64,27 @@ for ((i=$1; i<=$2; i++)); do
 
     echo "Simulation for replicate $i complete."
 
-    # Step 2: Run the Analysis on the Simulation Outputs (using LOCAL VENV Python)
+    # Step 2: Run the Analysis on the Simulation Outputs (using LOCAL VENV Python, added -u)
     echo "Starting the analysis of outputs for replicate $i"
-    "$VENV_PYTHON_EXE" "$ANALYSIS_SCRIPT" \
+    "$VENV_PYTHON_EXE" -u "$ANALYSIS_SCRIPT" \
         --input_dir "$REPLICATE_DIR_SCRATCH" \
         --output_file "$ANALYSIS_OUTPUT_FILE" \
         --replicate_id "$i"
     echo "Matching complete for replicate $i."
     
-    # Step 3: Generate the triangle plot (using LOCAL VENV Python)
+    # Step 3: Generate the triangle plot (using LOCAL VENV Python, added -u and fix for arg type)
     echo "Generating triangle plot for replicate $i"
 
-    # Extract the matching generation from the analysis file
-    MATCHING_GEN=$(tail -n 1 "$ANALYSIS_OUTPUT_FILE" | awk -F, '{print $2}')
+    # FIX: Extract the raw generation label and strip the 'HG' prefix to pass an integer to Python.
+    RAW_GEN_LABEL=$(tail -n 1 "$ANALYSIS_OUTPUT_FILE" | awk -F, '{print $2}' | tr -d '"')
+    MATCHING_GEN_NUMBER=${RAW_GEN_LABEL/HG/}
     
     TRIANGLE_PLOT_OUTPUT="${REPLICATE_DIR_SCRATCH}/results/triangle_plot_rep_${i}.png"
 
-    "$VENV_PYTHON_EXE" "$PLOTTING_SCRIPT" \
+    "$VENV_PYTHON_EXE" -u "$PLOTTING_SCRIPT" \
         --input_file "${REPLICATE_DIR_SCRATCH}/results/results_rep_${i}_individual_hi_het.csv" \
         --output_file "$TRIANGLE_PLOT_OUTPUT" \
-        --highlight_gen "$MATCHING_GEN"
+        --highlight_gen "$MATCHING_GEN_NUMBER" # <-- FIX APPLIED
         
     echo "Plotting complete for replicate $i."
 
