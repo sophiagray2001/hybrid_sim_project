@@ -72,6 +72,7 @@ class RecombinationSimulator:
         self.marker_map = self._create_marker_map()
         self.chromosome_structure = self._create_chromosome_structure(num_chromosomes)
         self.chromosome_lengths_cm = self._get_chromosome_lengths_cm()
+        self.marker_positions_arrays = self._create_marker_position_arrays()
 
     def _create_marker_map(self):
         """Creates a dictionary mapping markers to their position and chromosome."""
@@ -130,6 +131,21 @@ class RecombinationSimulator:
                 lengths[chrom] = 0.0
         return lengths
     
+    def _create_marker_position_arrays(self):
+        """
+        Converts the list of marker base_pair positions for each chromosome
+        into a NumPy array for fast searching.
+        """
+        pos_arrays = {}
+        for chrom, markers in self.chromosome_structure.items():
+            if markers:
+                # Store the base_pair (position) as a fast numpy array
+                # Ensure the array is sorted (which it should be from _create_chromosome_structure)
+                pos_arrays[chrom] = np.array([m['base_pair'] for m in markers])
+            else:
+                pos_arrays[chrom] = np.array([])
+        return pos_arrays
+    
     def _simulate_crossovers(self, chromosome_id, crossover_dist):
         """
         Simulates the number of crossovers on a chromosome using the provided distribution.
@@ -174,22 +190,42 @@ class RecombinationSimulator:
             
         # Select crossover positions
         chrom_length = self.chromosome_lengths_cm.get(chromosome_id, 0.0)
-        crossover_positions_cm = [random.uniform(0, chrom_length) for _ in range(num_crossovers)]
-        crossover_positions_cm.sort()
+        
+        # --- OPTIMIZATION 1: Use numpy to generate and sort random positions (faster) ---
+        crossover_positions_cm = np.sort(np.random.uniform(0, chrom_length, num_crossovers))
 
         # Determine marker indices closest to the crossover positions
         markers_on_chrom = self.chromosome_structure.get(chromosome_id, [])
         if not markers_on_chrom:
             return offspring_haplotype, []
             
-        marker_positions_cm = [m['base_pair'] for m in markers_on_chrom]
+        # --- OPTIMIZATION 2: Use the pre-calculated NumPy array for positions ---
+        marker_positions_cm = self.marker_positions_arrays[chromosome_id]
         
         crossover_indices = []
         for pos_cm in crossover_positions_cm:
-            # Find the index of the marker closest to the crossover position
-            # np.argmin finds the index of the minimum value
-            idx = (np.abs(np.array(marker_positions_cm) - pos_cm)).argmin()
-            crossover_indices.append(idx)
+            # 1. Use searchsorted (Binary Search) to find insertion point
+            idx_after = np.searchsorted(marker_positions_cm, pos_cm, side='right')
+            
+            # 2. Determine the closest index (replaces np.argmin logic)
+            if idx_after == 0:
+                # Crossover before the first marker. Closest is marker 0.
+                closest_idx = 0
+            elif idx_after == len(marker_positions_cm):
+                # Crossover after the last marker. Closest is the last marker.
+                closest_idx = len(marker_positions_cm) - 1
+            else:
+                # Compare distance to the marker before (idx_after - 1) and the one at (idx_after)
+                dist_prev = pos_cm - marker_positions_cm[idx_after - 1]
+                dist_curr = marker_positions_cm[idx_after] - pos_cm
+                
+                if dist_prev <= dist_curr:
+                    closest_idx = idx_after - 1
+                else:
+                    closest_idx = idx_after
+                    
+            crossover_indices.append(closest_idx)
+        # --- END OPTIMIZATION BLOCK ---
         
         current_haplotype = random.choice([0, 1])  # 0 for hapA, 1 for hapB
         current_marker_idx = 0
@@ -206,6 +242,7 @@ class RecombinationSimulator:
             # Record the position of the crossover and the marker before it
             if track_junctions:
                 # Add the previous marker index to the junction data
+                # NOTE: We use the random position from crossover_positions_cm, which is now a numpy array
                 junctions.append({
                     'chromosome': chromosome_id,
                     'base_pair': crossover_positions_cm[i],
@@ -381,84 +418,60 @@ class RecombinationSimulator:
     
     def get_ancestry_blocks(self, individual):
         """
-        Tracks ancestry blocks for a given individual. This is a simplified
-        version that assumes PA is fixed for allele '1' and PB for allele '0'.
+        Tracks ancestry blocks for a given individual. Vectorized using NumPy 
+        to efficiently find ancestry changes (transitions) across the chromosome.
         
         Returns:
             list: A list of dictionaries, each representing a block.
         """
         blocks_data = []
+        
         for chrom_id, markers in self.chromosome_structure.items():
             if not markers:
                 continue
 
-            hapA, hapB = individual.genome.chromosomes[chrom_id]
-            
-            # Haplotype 1 blocks
-            current_ancestry = hapA[0] # Ancestry of the first marker
-            start_pos = markers[0]['base_pair']
-            start_marker_id = markers[0]['marker_id'] # Get the start marker ID
-            for i in range(1, len(hapA)):
-                if hapA[i] != current_ancestry:
-                    # End the previous block and start a new one
-                    end_pos = markers[i-1]['base_pair']
-                    end_marker_id = markers[i-1]['marker_id'] # Get the end marker ID
+            # Get necessary pre-calculated arrays
+            # Assumes self.marker_positions_arrays has been set up in __init__ (Step 1 & 2)
+            marker_positions_cm = self.marker_positions_arrays[chrom_id]
+            # Convert marker IDs to a fast numpy array for indexing
+            marker_ids = np.array([m['marker_id'] for m in markers])
+
+            # Iterate through both haplotypes (index 0 and 1)
+            for hap_idx, hap in enumerate(individual.genome.chromosomes[chrom_id]):
+                
+                # 1. Find Ancestry Transitions: 
+                # np.diff calculates the difference between adjacent elements. 
+                # A non-zero difference means the ancestry changed (e.g., 0->1 or 1->0).
+                # The block break occurs *after* the marker where the ancestry changes, so we add 1.
+                transition_indices = np.where(np.diff(hap) != 0)[0] + 1
+
+                # 2. Define Block Boundaries:
+                # Block start indices are the first marker (0) plus all transition points.
+                block_start_indices = np.concatenate(([0], transition_indices))
+                # Block end indices are all markers just before a transition, plus the last marker index.
+                block_end_indices = np.concatenate((transition_indices - 1, [len(hap) - 1]))
+
+                # 3. Use advanced indexing to get all properties in bulk
+                ancestries = hap[block_start_indices] 
+                start_cms = marker_positions_cm[block_start_indices]
+                end_cms = marker_positions_cm[block_end_indices]
+                start_marker_ids = marker_ids[block_start_indices]
+                end_marker_ids = marker_ids[block_end_indices]
+                
+                # 4. Final loop: Iterate only over the resulting blocks (which are far fewer than markers)
+                for i in range(len(block_start_indices)):
+                    # Ancestry is 'PA' if the allele is '1', 'PB' if the allele is '0'
+                    ancestry_label = 'PA' if ancestries[i] == 1 else 'PB'
                     blocks_data.append({
                         'individual_id': individual.individual_id,
                         'chromosome': chrom_id,
-                        'haplotype': 1,
-                        'start_cm': start_pos,
-                        'end_cm': end_pos,
-                        'start_marker_id': start_marker_id,
-                        'end_marker_id': end_marker_id,
-                        'ancestry': 'PA' if current_ancestry == 1 else 'PB'
+                        'haplotype': hap_idx + 1, # Convert 0-indexed hap_idx to 1-based haplotype label
+                        'start_cm': start_cms[i],
+                        'end_cm': end_cms[i],
+                        'start_marker_id': start_marker_ids[i],
+                        'end_marker_id': end_marker_ids[i],
+                        'ancestry': ancestry_label
                     })
-                    current_ancestry = hapA[i]
-                    start_pos = markers[i]['base_pair']
-                    start_marker_id = markers[i]['marker_id'] # Update start marker ID
-            # Add the last block
-            blocks_data.append({
-                'individual_id': individual.individual_id,
-                'chromosome': chrom_id,
-                'haplotype': 1,
-                'start_cm': start_pos,
-                'end_cm': markers[-1]['base_pair'],
-                'start_marker_id': start_marker_id,
-                'end_marker_id': markers[-1]['marker_id'], # Get the end marker ID
-                'ancestry': 'PA' if current_ancestry == 1 else 'PB'
-            })
-            
-            # Repeat for Haplotype 2
-            current_ancestry = hapB[0]
-            start_pos = markers[0]['base_pair']
-            start_marker_id = markers[0]['marker_id'] # Get the start marker ID
-            for i in range(1, len(hapB)):
-                if hapB[i] != current_ancestry:
-                    end_pos = markers[i-1]['base_pair']
-                    end_marker_id = markers[i-1]['marker_id'] # Get the end marker ID
-                    blocks_data.append({
-                        'individual_id': individual.individual_id,
-                        'chromosome': chrom_id,
-                        'haplotype': 2,
-                        'start_cm': start_pos,
-                        'end_cm': end_pos,
-                        'start_marker_id': start_marker_id,
-                        'end_marker_id': end_marker_id,
-                        'ancestry': 'PA' if current_ancestry == 1 else 'PB'
-                    })
-                    current_ancestry = hapB[i]
-                    start_pos = markers[i]['base_pair']
-                    start_marker_id = markers[i]['marker_id'] # Update start marker ID
-            blocks_data.append({
-                'individual_id': individual.individual_id,
-                'chromosome': chrom_id,
-                'haplotype': 2,
-                'start_cm': start_pos,
-                'end_cm': markers[-1]['base_pair'],
-                'start_marker_id': start_marker_id,
-                'end_marker_id': markers[-1]['marker_id'], # Get the end marker ID
-                'ancestry': 'PA' if current_ancestry == 1 else 'PB'
-            })
 
         return blocks_data
 
