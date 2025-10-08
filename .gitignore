@@ -1,4 +1,23 @@
-__pycache__/ 
+# --- Simulation Outputs ---
+# Ignore all simulation output folders
+simulation_outputs/
+simulation_outputs_second_batch/
+simulation_outputs_test/
+
+# Ignore the combined CSV if it's large and auto-generated
+# simulation_outputs/combined_matching_generations.csv
+
+# --- Results/Plot Outputs (keep only the final desired images if needed) ---
+# Ignore all generated result images and temporary files
+results/*.png
+results/*.csv
+results/stochasticity_overlay_TEST_1_to_9.png
+
+# --- Slurm and Temporary Files ---
+# Ignore all Slurm output logs
+scripts/shell_scripts/slurm-rep_*.out
+# Ignore NFS temporary files (the deleted ones you see)
+scripts/shell_scripts/.nfs*__pycache__/ 
 .ipynb_checkpoints/ 
 *.pyc 
 *.pkl 
