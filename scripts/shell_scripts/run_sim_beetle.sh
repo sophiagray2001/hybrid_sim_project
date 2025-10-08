@@ -32,8 +32,8 @@ SIM_SCRIPT="/mnt/nfs2/bioenv/sg802/hybrid_sim_project/scripts/sim_v2.py"
 ANALYSIS_SCRIPT="/mnt/nfs2/bioenv/sg802/hybrid_sim_project/scripts/python_helper_scripts/match_hybrid_to_parent_het.py"
 PLOTTING_SCRIPT="/mnt/nfs2/bioenv/sg802/hybrid_sim_project/scripts/python_helper_scripts/visualisations/triangle_plot_grey_line.py"
 
-BASE_OUTPUT_DIR="/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs/"
-ANALYSIS_OUTPUT_FILE="${BASE_OUTPUT_DIR}/combined_matching_generations.csv"
+BASE_OUTPUT_DIR="/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_second_batch/"
+ANALYSIS_OUTPUT_FILE="${BASE_OUTPUT_DIR}/combined_matching_generations_second_batch.csv"
 
 
 for ((i=$1; i<=$2; i++)); do
@@ -47,7 +47,7 @@ for ((i=$1; i<=$2; i++)); do
     mkdir -p "${REPLICATE_DIR}/results"
 
     # Step 1: Run the Genetic Simulation
-    SIM_COMMAND="$VENV_PYTHON_EXE -u $SIM_SCRIPT --output_dir $REPLICATE_DIR --replicate_id $i --file /mnt/nfs2/bioenv/sg802/hybrid_sim_project/beetle_input.csv -npa 100 -npb 100 -HG 3000 -nc 58 -oh -gmap"
+    SIM_COMMAND="$VENV_PYTHON_EXE -u $SIM_SCRIPT --output_dir $REPLICATE_DIR --replicate_id $i --file "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/beetle_input.csv" -npa 100 -npb 100 -HG 3000 -nc 58 -oh -gmap"
     echo "Command: $SIM_COMMAND"
     $SIM_COMMAND 
 

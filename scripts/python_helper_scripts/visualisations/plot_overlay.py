@@ -2,10 +2,10 @@ import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import re
+import random
 
-# =========================================================
+
 # HELPER FUNCTION
-# =========================================================
 
 def sort_key(label):
     """
@@ -31,9 +31,7 @@ def sort_key(label):
         
     return (4, 0, label) # Default for anything else
 
-# =========================================================
 # PLOTTING FUNCTION
-# =========================================================
 
 def plot_simulation_overlay(base_output_dir: str, save_filename: str, replicate_ids: list = None):
     """
@@ -49,6 +47,7 @@ def plot_simulation_overlay(base_output_dir: str, save_filename: str, replicate_
         target_items = os.listdir(base_output_dir)
     
     for item in target_items:
+        # (File processing and mean calculation remains the same)
         rep_dir = os.path.join(base_output_dir, item)
         
         if os.path.isdir(rep_dir) and item.startswith('replicate_'):
@@ -85,7 +84,7 @@ def plot_simulation_overlay(base_output_dir: str, save_filename: str, replicate_
     all_means_combined = pd.concat(all_replicate_dfs.values(), keys=all_replicate_dfs.keys(), names=['replicate', 'generation'])
     grand_mean_df = all_means_combined.groupby('generation').mean()
     
-    # Sort the grand mean (LABEL-BASED SORTING: Use .loc)
+    # Sort the grand mean
     all_sorted_gen_labels = sorted(grand_mean_df.index, key=sort_key)
     grand_mean_df = grand_mean_df.loc[all_sorted_gen_labels]
     
@@ -95,25 +94,53 @@ def plot_simulation_overlay(base_output_dir: str, save_filename: str, replicate_
     ax.spines['right'].set_visible(False)
     ax.set_xlabel("Mean Hybrid Index (HI)", fontsize=14)
     ax.set_ylabel("Mean Heterozygosity (HET)", fontsize=14)
+    
+    # Randomly select 3 replicates to highlight
+    rep_keys = list(all_replicate_dfs.keys())
+    if len(rep_keys) >= 3:
+        random_reps = random.sample(rep_keys, 3)
+    else:
+        random_reps = rep_keys 
 
-    # 4. Plot Stochastic Paths (Spaghetti Plot)
+    HIGHLIGHT_COLORS = {
+        random_reps[0]: 'blue',
+        random_reps[1]: 'red',
+        random_reps[2]: 'orange'
+    } if len(random_reps) >= 3 else {}
+
+    # 4. Plot Stochastic Paths
     path_start_gen = 'HG1' 
     
     for rep_id, df in all_replicate_dfs.items():
         if path_start_gen in df.index:
-            # SLICING BY POSITION: Use .iloc
             path_df = df.iloc[df.index.get_loc(path_start_gen):]
+            
+            # Default style for background paths
+            color = 'gray' 
+            linewidth = 1
+            alpha = 0.25 
+            label = None
+            zorder = 2
+            
+            # Apply highlight style for selected paths
+            if rep_id in HIGHLIGHT_COLORS:
+                color = HIGHLIGHT_COLORS[rep_id]
+                linewidth = 1.5
+                alpha = 1.0
+                label = f"Replicate {rep_id}"
+                zorder = 4 
+            
             ax.plot(path_df['mean_HI'], path_df['mean_HET'],
-                    color='blue', linestyle='-', linewidth=1, alpha=0.15, zorder=2) 
+                    color=color, linestyle='-', linewidth=linewidth, 
+                    alpha=alpha, zorder=zorder, label=label) 
 
-    # 5. Plot the Grand Mean Path (Thick Line)
+    # 5. Plot the Mean Path 
     if path_start_gen in grand_mean_df.index:
-        # SLICING BY POSITION: Use .iloc (FIXED)
         grand_path_df = grand_mean_df.iloc[grand_mean_df.index.get_loc(path_start_gen):] 
         ax.plot(grand_path_df['mean_HI'], grand_path_df['mean_HET'],
-                color='red', linestyle='-', linewidth=3, alpha=0.8, zorder=3, label='Grand Mean Path')
+                color='black', linestyle='--', linewidth=1, alpha=1.0, zorder=5, label='Mean Path') 
                 
-    # 6. Highlight Key Points (PA, PB, Grand Mean Last Gen)
+    # 6. Highlight Key Points (PA, PB, HG1, Grand Mean Last Gen)
     
     # Plot Triangle Edges
     triangle_edges = [
@@ -122,7 +149,7 @@ def plot_simulation_overlay(base_output_dir: str, save_filename: str, replicate_
     for (x0, y0), (x1, y1) in triangle_edges:
         ax.plot([x0, x1], [y0, y1], linestyle='-', color='black', alpha=0.5, linewidth=1.5, zorder=1)
 
-    # Highlight PA, PB, and the final generation
+    # Highlight PA, PB, HG1, and the final generation
     points_to_label = ['PA', 'PB', 'HG1', all_sorted_gen_labels[-1]] 
     
     for gen_name in points_to_label:
@@ -136,11 +163,11 @@ def plot_simulation_overlay(base_output_dir: str, save_filename: str, replicate_
             elif gen_name == all_sorted_gen_labels[-1]: color = 'red' # Final generation point
 
             ax.scatter(mean_data['mean_HI'], mean_data['mean_HET'],
-                        color=color, s=100, edgecolors='black', linewidth=1.5, zorder=4)
+                        color=color, s=100, edgecolors='black', linewidth=1.5, zorder=6)
             
             # Label the point
             ax.text(mean_data['mean_HI'] + 0.01, mean_data['mean_HET'] + 0.01, gen_name,
-                    fontsize=10, color='black', ha='left', va='bottom', zorder=5)
+                    fontsize=10, color='black', ha='left', va='bottom', zorder=7)
 
     # Final settings
     ax.set_xlim(-0.05, 1.05)
@@ -148,23 +175,26 @@ def plot_simulation_overlay(base_output_dir: str, save_filename: str, replicate_
     ax.set_aspect('equal', adjustable='box')
     ax.grid(False)
     
+    # --- NEW: Add Legend ---
+    ax.legend(loc='upper right', frameon=True, fontsize=10)
+    # -----------------------
+    
     plt.savefig(save_filename, bbox_inches='tight')
     plt.close()
     print(f"\nOverlay plot saved to: {save_filename}")
-
 
 if __name__ == "__main__":
     # Define the persistent directory where all 'replicate_X' folders are saved
     PERSISTENT_OUTPUT_DIR = "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs/" 
     
-    # Define the specific replicates to use for this test run (1 to 9)
-    TEST_REPLICATES = list(range(1, 10)) # Creates the list [1, 2, ... 9]
+    # Define the specific replicates to use for this test run (1 to 50)
+    TEST_REPLICATES = list(range(1, 51)) 
     
     # Define a unique output file name for the test
     OVERLAY_PLOT_OUTPUT = os.path.join(
         os.path.dirname(PERSISTENT_OUTPUT_DIR.rstrip('/')), 
         "results", 
-        "stochasticity_overlay_TEST_1_to_9.png" # Unique name for testing
+        "overlay_1_to_50_HIGHLIGHTED.png" # Unique name for testing
     )
 
     # Ensure the output directory exists
@@ -174,5 +204,5 @@ if __name__ == "__main__":
     plot_simulation_overlay(
         base_output_dir=PERSISTENT_OUTPUT_DIR, 
         save_filename=OVERLAY_PLOT_OUTPUT,
-        replicate_ids=TEST_REPLICATES # <-- The list of 1 to 9
+        replicate_ids=TEST_REPLICATES 
     )
