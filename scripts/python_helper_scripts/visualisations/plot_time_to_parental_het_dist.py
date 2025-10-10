@@ -1,4 +1,8 @@
 # MODIFIED DISTRIBUTION PLOTTING FUNCTION
+import os 
+import pandas as pd
+import matplotlib.pyplot as plt
+import re
 
 def plot_crossing_time_distribution(input_filepath: str, save_filename: str):
     """
@@ -31,29 +35,28 @@ def plot_crossing_time_distribution(input_filepath: str, save_filename: str):
     fig, ax = plt.subplots(figsize=(10, 6))
     
     # Plotting the histogram
-    ax.hist(crossing_times, bins=20, edgecolor='black', color='teal', alpha=0.7)
+    ax.hist(crossing_times, bins=11, edgecolor='black', color='gray', alpha=0.7)
     
     # Calculate Mean, Median, and CI
     crossing_series = pd.Series(crossing_times)
     mean_time = crossing_series.mean()
-    median_time = crossing_series.median()
+    #median_time = crossing_series.median()
     
     # Calculate 95% CI using Percentiles
     ci_lower = crossing_series.quantile(0.025)
     ci_upper = crossing_series.quantile(0.975)
     
     # Add Mean and Median lines
-    ax.axvline(mean_time, color='red', linestyle='--', linewidth=2, label=f'Mean Time: {mean_time:.1f} Gens')
-    ax.axvline(median_time, color='orange', linestyle='-', linewidth=2, label=f'Median Time: {median_time:.1f} Gens')
+    ax.axvline(mean_time, color='black', linestyle='--', linewidth=1, label=f'Mean Time: {mean_time:.1f} Gens')
+    #ax.axvline(median_time, color='orange', linestyle='-', linewidth=2, label=f'Median Time: {median_time:.1f} Gens')
     
     # Add 95% CI lines
-    ax.axvline(ci_lower, color='gray', linestyle=':', linewidth=1.5, label=f'95% CI: ({ci_lower:.1f}-{ci_upper:.1f}) Gens')
-    ax.axvline(ci_upper, color='gray', linestyle=':', linewidth=1.5)
+    ax.axvline(ci_lower, color='blue', linestyle=':', linewidth=1.5, label=f'95% CI: ({ci_lower:.1f}-{ci_upper:.1f}) Gens')
+    ax.axvline(ci_upper, color='blue', linestyle=':', linewidth=1.5)
 
     # Set up labels and title
     ax.set_xlabel("Time (Generations, HGx) to Reach Parent HET Threshold", fontsize=12)
     ax.set_ylabel("Number of Replicates", fontsize=12)
-    ax.set_title("Distribution of Time Required to Purge Heterozygosity", fontsize=14)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.legend(loc='upper right')
@@ -61,3 +64,30 @@ def plot_crossing_time_distribution(input_filepath: str, save_filename: str):
     plt.savefig(save_filename, bbox_inches='tight')
     plt.close()
     print(f"\nTime distribution plot saved to: {save_filename}")
+    
+if __name__ == "__main__":
+    # Define the persistent directory where all 'replicate_X' folders are saved
+    PERSISTENT_OUTPUT_DIR = "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs/" 
+    
+    # Ensure the required results directory exists (This is for your OUTPUT image)
+    RESULTS_DIR = os.path.join(os.path.dirname(PERSISTENT_OUTPUT_DIR.rstrip('/')), "results")
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    
+    # --------------------------------------------------------------------------------
+    # 1. Run the TIME DISTRIBUTION Plot (Using your pre-calculated CSV)
+    # --------------------------------------------------------------------------------
+    
+    # CORRECTED INPUT PATH: Use PERSISTENT_OUTPUT_DIR for the CSV location
+    CROSSING_INPUT_PATH = os.path.join(
+        PERSISTENT_OUTPUT_DIR, 
+        "combined_matching_generations.csv"  # <--- CORRECT INPUT FILE LOCATION
+    )
+    
+    # Keep the OUTPUT path pointing to the RESULTS_DIR
+    DISTRIBUTION_PLOT_OUTPUT = os.path.join(
+        RESULTS_DIR, 
+        "time_to_parent_het_distribution_1_50.png" 
+    )
+
+    # Call your distribution function
+    plot_crossing_time_distribution(CROSSING_INPUT_PATH, DISTRIBUTION_PLOT_OUTPUT)
