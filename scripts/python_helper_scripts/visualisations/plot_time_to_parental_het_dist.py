@@ -35,8 +35,10 @@ def plot_crossing_time_distribution_combined(crossing_df: pd.DataFrame, ne_value
     fig, ax = plt.subplots(figsize=(10, 6))
     
     # Use 15 bins, one for each Ne generation, up to 15
-    num_bins = int(MAX_NE_TIME) 
-    
+    # CHANGE: DOUBLE THE NUMBER OF BINS FOR TWICE THE RESOLUTION
+    # 15 * 2 = 30 bins
+    num_bins = int(MAX_NE_TIME) * 2
+            
     # Plotting the histogram using the NE-SCALED DATA and NE-SCALED RANGE
     ax.hist(
         crossing_times_ne, 
@@ -78,7 +80,7 @@ def plot_crossing_time_distribution_combined(crossing_df: pd.DataFrame, ne_value
     # 5. Set up labels and title
     
     # CRUCIAL CHANGE: Update X-axis label to reflect the scaling
-    ax.set_xlabel(f"Time (Generations) Scaled by Ne Generations", fontsize=12)
+    ax.set_xlabel(f"Time (Ne Generations)", fontsize=12)
     
     ax.set_ylabel("Number of Replicates", fontsize=12)
     
