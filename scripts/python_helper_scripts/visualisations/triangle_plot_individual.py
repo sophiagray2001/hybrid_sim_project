@@ -76,8 +76,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     # Using relative paths for better portability
-    input_file = "simulation_outputs/results/results_rep_1_individual_hi_het.csv"
-    output_directory = "simulation_outputs/results/individual_point_tps"
+    input_file = r"C:\Users\sg802\Documents\git_clone\hybrid_sim_project\scripts\simulation_outputs\results\results_rep_100_individual_hi_het.csv"
+    output_directory = r"C:\Users\sg802\Documents\git_clone\hybrid_sim_project\scripts\simulation_outputs\results\individual_point_tps"
     output_filename = os.path.join(output_directory, f"triangle_plot_{args.generation}.png")
 
     # Ensure the output directory exists
