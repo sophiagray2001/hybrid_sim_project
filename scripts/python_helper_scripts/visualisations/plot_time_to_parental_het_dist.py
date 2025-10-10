@@ -1,62 +1,95 @@
-# MODIFIED DISTRIBUTION PLOTTING FUNCTION
 import os 
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator 
 import re
 
-def plot_crossing_time_distribution(input_filepath: str, save_filename: str):
+# --- REVISED FUNCTION: FULLY SCALED BY NE ---
+def plot_crossing_time_distribution_combined(crossing_df: pd.DataFrame, ne_value: float, save_filename: str):
     """
-    Reads the pre-calculated crossing time data and plots the distribution 
-    of generations required for HET to decrease to the parental mean level,
-    including the 95% confidence interval.
+    Plots the distribution of generations required for HET to decrease to 
+    the parental mean level across ALL replicates, with the X-axis fully 
+    scaled by the Effective Population Size (Ne).
     """
     
-    # 1. Load Data
-    try:
-        data = pd.read_csv(input_filepath)
-    except FileNotFoundError:
-        print(f"Error: Input file not found at {input_filepath}")
+    if crossing_df.empty:
+        print("Error: Input data DataFrame is empty.")
         return
     
-    if data.empty:
-        print("Error: Input data file is empty.")
-        return
-    
-    # 2. Extract Generation Time (Convert 'HGx' to integer x)
-    data['crossing_time'] = data['matching_hybrid_gen'].str.extract(r'HG(\d+)').astype(float)
-    
-    crossing_times = data['crossing_time'].dropna().tolist()
+    # 1. Prepare Data
+    # Extract original absolute time (G)
+    crossing_df['crossing_time'] = crossing_df['matching_hybrid_gen'].astype(str).str.extract(r'HG(\d+)').astype(float)
+    crossing_times_g = crossing_df['crossing_time'].dropna().tolist()
 
-    if not crossing_times:
-        print(f"Warning: No valid crossing times found in the data.")
+    if not crossing_times_g:
+        print("Warning: No valid crossing times found in the combined data.")
         return
+        
+    # CRUCIAL STEP 1: CONVERT DATA POINTS TO Ne GENERATIONS (T)
+    crossing_times_ne = [t / ne_value for t in crossing_times_g]
+    
+    # Define the new maximum X-axis limit in Ne units (3000 / 200 = 15)
+    MAX_NE_TIME = 3000 / ne_value 
 
-    # 3. Plot the Distribution (Histogram)
+    # 2. Plot the Distribution (Histogram)
     fig, ax = plt.subplots(figsize=(10, 6))
     
-    # Plotting the histogram
-    ax.hist(crossing_times, bins=11, edgecolor='black', color='gray', alpha=0.7)
+    # Use 15 bins, one for each Ne generation, up to 15
+    num_bins = int(MAX_NE_TIME) 
     
-    # Calculate Mean, Median, and CI
-    crossing_series = pd.Series(crossing_times)
-    mean_time = crossing_series.mean()
-    #median_time = crossing_series.median()
+    # Plotting the histogram using the NE-SCALED DATA and NE-SCALED RANGE
+    ax.hist(
+        crossing_times_ne, 
+        bins=num_bins, 
+        range=(0, MAX_NE_TIME), 
+        edgecolor='black', 
+        color='darkgray', 
+        alpha=0.8
+    )
     
-    # Calculate 95% CI using Percentiles
-    ci_lower = crossing_series.quantile(0.025)
-    ci_upper = crossing_series.quantile(0.975)
+    # 3. Calculate and Convert Statistics
+    crossing_series_g = pd.Series(crossing_times_g)
     
-    # Add Mean and Median lines
-    ax.axvline(mean_time, color='black', linestyle='--', linewidth=1, label=f'Mean Time: {mean_time:.1f} Gens')
-    #ax.axvline(median_time, color='orange', linestyle='-', linewidth=2, label=f'Median Time: {median_time:.1f} Gens')
+    # Absolute Generations (G) - Used only for calculating Ne stats
+    mean_time_g = crossing_series_g.mean()
+    ci_lower_g = crossing_series_g.quantile(0.025)
+    ci_upper_g = crossing_series_g.quantile(0.975)
     
-    # Add 95% CI lines
-    ax.axvline(ci_lower, color='blue', linestyle=':', linewidth=1.5, label=f'95% CI: ({ci_lower:.1f}-{ci_upper:.1f}) Gens')
-    ax.axvline(ci_upper, color='blue', linestyle=':', linewidth=1.5)
+    # Ne Generations (G / Ne)
+    mean_time_ne = mean_time_g / ne_value
+    ci_lower_ne = ci_lower_g / ne_value
+    ci_upper_ne = ci_upper_g / ne_value
+    
+    # 4. Add Statistics Lines and Labels
+    
+    # Mean line (Plotted at NE-SCALED X-coordinate, label shows Ne G)
+    ax.axvline(
+        mean_time_ne, 
+        color='red', 
+        linestyle='--', 
+        linewidth=2, 
+        label=f'Mean Time: {mean_time_ne:.2f} Ne Gens (N={len(crossing_times_g)})'
+    )
+    
+    # 95% CI lines (Plotted at NE-SCALED X-coordinate, label shows Ne G)
+    ax.axvline(ci_lower_ne, color='blue', linestyle=':', linewidth=1.5, label=f'95% CI: ({ci_lower_ne:.2f}-{ci_upper_ne:.2f}) Ne Gens')
+    ax.axvline(ci_upper_ne, color='blue', linestyle=':', linewidth=1.5)
 
-    # Set up labels and title
-    ax.set_xlabel("Time (Generations, HGx) to Reach Parent HET Threshold", fontsize=12)
+    # 5. Set up labels and title
+    
+    # CRUCIAL CHANGE: Update X-axis label to reflect the scaling
+    ax.set_xlabel(f"Time (Generations) Scaled by Ne Generations", fontsize=12)
+    
     ax.set_ylabel("Number of Replicates", fontsize=12)
+    
+    # Enforce X-axis limits and ticks (0 to 15, ticks every 1 unit)
+    ax.set_xlim(0, MAX_NE_TIME)
+    ax.set_xticks(range(int(MAX_NE_TIME) + 1)) 
+    
+    # Enforce Y-axis ticks to be integers
+    ax.yaxis.set_major_locator(MaxNLocator(integer=True))
+    
+    #x.set_title(f"Distribution of HET Crossing Time Across All Replicates", fontsize=14)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.legend(loc='upper right')
@@ -64,30 +97,57 @@ def plot_crossing_time_distribution(input_filepath: str, save_filename: str):
     plt.savefig(save_filename, bbox_inches='tight')
     plt.close()
     print(f"\nTime distribution plot saved to: {save_filename}")
-    
+
+
 if __name__ == "__main__":
-    # Define the persistent directory where all 'replicate_X' folders are saved
-    PERSISTENT_OUTPUT_DIR = "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs/" 
+    # --- 1. DEFINE FILE PATHS (Using your last working local paths) ---
     
-    # Ensure the required results directory exists (This is for your OUTPUT image)
-    RESULTS_DIR = os.path.join(os.path.dirname(PERSISTENT_OUTPUT_DIR.rstrip('/')), "results")
-    os.makedirs(RESULTS_DIR, exist_ok=True)
+    # Base path for Replicates 1-50
+    BASE_DIR_1 = "C:/Users/sg802/Documents/git_clone/hybrid_sim_project/input_data/simulation_outputs"
+    INPUT_DATA_BASE = os.path.dirname(BASE_DIR_1) 
+    RESULTS_BASE_DIR = os.path.join(INPUT_DATA_BASE, "results")
     
-    # --------------------------------------------------------------------------------
-    # 1. Run the TIME DISTRIBUTION Plot (Using your pre-calculated CSV)
-    # --------------------------------------------------------------------------------
-    
-    # CORRECTED INPUT PATH: Use PERSISTENT_OUTPUT_DIR for the CSV location
-    CROSSING_INPUT_PATH = os.path.join(
-        PERSISTENT_OUTPUT_DIR, 
-        "combined_matching_generations.csv"  # <--- CORRECT INPUT FILE LOCATION
+    # CORRECTED PATH: Use RESULTS_BASE_DIR for the centralized CSV file
+    CROSSING_PATH_1 = os.path.join(
+        BASE_DIR_1,
+        "combined_matching_generations.csv" 
     )
     
-    # Keep the OUTPUT path pointing to the RESULTS_DIR
-    DISTRIBUTION_PLOT_OUTPUT = os.path.join(
-        RESULTS_DIR, 
-        "time_to_parent_het_distribution_1_50.png" 
+    # Base path for Replicates 51-100
+    BASE_DIR_2 = "C:/Users/sg802/Documents/git_clone/hybrid_sim_project/input_data/simulation_outputs_second_batch"
+    
+    # Path for the second batch's unique CSV file
+    CROSSING_PATH_2 = os.path.join(
+        BASE_DIR_2, 
+        "combined_matching_generations_second_batch.csv" 
     )
 
-    # Call your distribution function
-    plot_crossing_time_distribution(CROSSING_INPUT_PATH, DISTRIBUTION_PLOT_OUTPUT)
+    # Define the output path for the final combined plot
+    COMBINED_PLOT_OUTPUT = os.path.join(
+        RESULTS_BASE_DIR, 
+        "time_to_parent_het_distribution_combined_Ne_scaled.png" 
+    )
+    
+    # Ensure the output directory exists
+    os.makedirs(os.path.dirname(COMBINED_PLOT_OUTPUT), exist_ok=True)
+    
+    # --- 2. LOAD AND CONCATENATE THE CROSSING DATA ---
+    print("Loading and combining crossing data from both directories...")
+    try:
+        df1 = pd.read_csv(CROSSING_PATH_1)
+        df2 = pd.read_csv(CROSSING_PATH_2)
+        combined_crossing_df = pd.concat([df1, df2], ignore_index=True)
+        print(f"Loaded a total of {len(combined_crossing_df)} replicates.")
+    except FileNotFoundError as e:
+        print(f"Error loading required crossing files: {e}")
+        exit(1)
+    
+    # --- 3. DEFINE YOUR EFFECTIVE POPULATION SIZE ---
+    N_E_VALUE = 200.0 # Effective Population Size for scaling
+
+    # --- 4. RUN THE PLOTTING FUNCTION ---
+    plot_crossing_time_distribution_combined(
+        crossing_df=combined_crossing_df, 
+        ne_value=N_E_VALUE,         
+        save_filename=COMBINED_PLOT_OUTPUT
+    )
