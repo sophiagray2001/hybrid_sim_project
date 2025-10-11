@@ -63,6 +63,10 @@ class Population:
     def get_individual_by_id(self, individual_id):
         return self.individuals.get(individual_id)
 
+import numpy as np
+import random
+# Assume Individual, Genome, etc., are defined elsewhere
+
 class RecombinationSimulator:
     """
     Manages the simulation of genetic recombination and the creation of
@@ -120,6 +124,7 @@ class RecombinationSimulator:
             if markers:
                 min_pos = markers[0]['base_pair']
                 max_pos = markers[-1]['base_pair']
+                # NOTE: This calculation is the difference between the first and last base_pair position.
                 lengths[chrom] = max_pos - min_pos 
             else:
                 lengths[chrom] = 0.0
@@ -265,29 +270,54 @@ class RecombinationSimulator:
 
         return offspring, blocks_data, junctions_data
     
-    def create_pure_founder(self, individual_id, generation, pop_label):
+    # RENAME: create_pure_founder -> create_pure_immigrant
+    def create_pure_immigrant(self, individual_id, generation, pop_label): 
         """
-        Creates a new founder individual (immigrant) with a pure genotype 
-        based on the provided pop_label ('PA' or 'PB'). Used as a default.
+        Creates a new homozygous individual (immigrant) with a pure genotype 
+        based on the provided pop_label ('PA' or 'PB'). 
+
+        The creation process now respects marker frequency data if it exists 
+        (like the main founders), or falls back to fixed alleles if not.
         """
         
         if pop_label not in ['PA', 'PB']:
             raise ValueError("pop_label must be 'PA' or 'PB'")
 
-        # Determine the fixed allele: 0 for PA, 1 for PB
-        fixed_allele = 0 if pop_label == 'PA' else 1
-        
         immigrant_haplotypes = {}
         
+        # Check if frequency data is present in the first marker (a simple check)
+        # Assuming 'pa_freq' is the column containing allele frequency data.
+        marker_data_exists = self.known_markers_data and 'pa_freq' in self.known_markers_data[0]
+        
         for chrom in self.chromosome_structure.keys():
-            markers_on_chrom = self.chromosome_structure[chrom]
-            num_markers = len(markers_on_chrom)
-
-            # Create pure haplotype arrays using NumPy
-            alleles_hap1 = np.full(num_markers, fixed_allele, dtype=np.int8)
-            alleles_hap2 = np.full(num_markers, fixed_allele, dtype=np.int8)
+            markers = self.chromosome_structure[chrom]
+            num_markers = len(markers)
             
-            immigrant_haplotypes[chrom] = (alleles_hap1, alleles_hap2)
+            if marker_data_exists:
+                # --- NEW LOGIC: Use frequency data to create pure immigrant ---
+                
+                # Create a map where P_A allele frequency is 1.0 for PA and 0.0 for PB
+                pure_freqs_map = {}
+                for m in markers:
+                    # If creating PA immigrant (pop_label='PA'), set P_A allele freq to 1.0 (fixed 0 allele)
+                    if pop_label == 'PA':
+                        pure_freqs_map[m['marker_id']] = 1.0
+                    # If creating PB immigrant (pop_label='PB'), set P_A allele freq to 0.0 (fixed 1 allele)
+                    else: 
+                        pure_freqs_map[m['marker_id']] = 0.0
+                
+                # Use the new helper function to generate the homozygous genome
+                haplotypes_chrom = self.create_initial_haplotypes_pure(markers, pure_freqs_map)
+                immigrant_haplotypes[chrom] = haplotypes_chrom
+                
+            else:
+                # --- OLD LOGIC: Fallback to fixed 0/1 alleles (for cases with no input file) ---
+                fixed_allele = 0 if pop_label == 'PA' else 1
+                
+                # Create pure haplotype arrays using NumPy
+                alleles_hap1 = np.full(num_markers, fixed_allele, dtype=np.int8)
+                alleles_hap2 = np.full(num_markers, fixed_allele, dtype=np.int8)
+                immigrant_haplotypes[chrom] = (alleles_hap1, alleles_hap2)
 
         immigrant_genome = Genome(immigrant_haplotypes)
         
@@ -299,6 +329,27 @@ class RecombinationSimulator:
             parent2_id=None 
         )
         return immigrant
+
+    # --- NEW HELPER METHOD ADDED FOR IMMIGRANT CREATION ---
+    def create_initial_haplotypes_pure(self, markers, marker_freqs_map):
+        """
+        Helper function to build a homozygous haplotype when the population frequency
+        for the 'PA' allele is fixed at 1.0 or 0.0. Skips random sampling.
+        """
+        hapA_alleles = []
+        hapB_alleles = []
+        
+        for m in markers:
+            freq = marker_freqs_map[m['marker_id']]
+            # If freq is 1.0 (PA/0 allele), the allele is 0. If freq is 0.0 (PB/1 allele), the allele is 1.
+            allele = 0 if freq == 1.0 else 1 
+            
+            hapA_alleles.append(allele)
+            hapB_alleles.append(allele)
+
+        return (np.array(hapA_alleles, dtype=np.int8), np.array(hapB_alleles, dtype=np.int8))
+    
+    # --------------------------------------------------------
 
     def create_initial_haplotypes(self, marker_freqs_map):
         """
@@ -388,14 +439,14 @@ class RecombinationSimulator:
                 block_start_indices = np.concatenate(([0], transition_indices))
                 block_end_indices = np.concatenate((transition_indices - 1, [len(hap) - 1]))
 
-                ancestries = hap[block_start_indices] 
+                ancestries = hap[block_start_indices]
                 start_cms = marker_positions_cm[block_start_indices]
                 end_cms = marker_positions_cm[block_end_indices]
                 start_marker_ids = marker_ids[block_start_indices]
                 end_marker_ids = marker_ids[block_end_indices]
                 
                 for i in range(len(block_start_indices)):
-                    ancestry_label = 'PA' if ancestries[i] == 0 else 'PB' 
+                    ancestry_label = 'PA' if ancestries[i] == 0 else 'PB'
                     
                     blocks_data.append({
                         'individual_id': individual.individual_id,
@@ -855,7 +906,7 @@ def simulate_generations(
                         individual_id = f"{gen_label}_I_{immigrant_counter_start}"
                         
                         # 2. Create the pure founder
-                        new_immigrant = simulator.create_pure_founder(
+                        new_immigrant = simulator.create_pure_immigrant(
                             individual_id=individual_id,
                             generation=gen_label,
                             pop_label=pop_label
