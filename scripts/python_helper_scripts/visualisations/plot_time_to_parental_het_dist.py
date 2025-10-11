@@ -105,7 +105,7 @@ if __name__ == "__main__":
     # --- 1. DEFINE FILE PATHS (Using your last working local paths) ---
     
     # Base path for Replicates 1-50
-    BASE_DIR_1 = "C:/Users/sg802/Documents/git_clone/hybrid_sim_project/input_data/simulation_outputs"
+    BASE_DIR_1 = "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs/"
     INPUT_DATA_BASE = os.path.dirname(BASE_DIR_1) 
     RESULTS_BASE_DIR = os.path.join(INPUT_DATA_BASE, "results")
     
@@ -116,7 +116,7 @@ if __name__ == "__main__":
     )
     
     # Base path for Replicates 51-100
-    BASE_DIR_2 = "C:/Users/sg802/Documents/git_clone/hybrid_sim_project/input_data/simulation_outputs_second_batch"
+    BASE_DIR_2 = "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_second_batch/"
     
     # Path for the second batch's unique CSV file
     CROSSING_PATH_2 = os.path.join(

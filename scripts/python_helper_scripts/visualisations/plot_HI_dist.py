@@ -57,7 +57,7 @@ def plot_hi_at_crossing_distribution(crossing_df: pd.DataFrame, rep_dir_map: dic
     # 3. Plot the Distribution (Histogram) of the collected HI values
     fig, ax = plt.subplots(figsize=(10, 6))
     
-    ax.hist(hi_at_crossing, bins=20, edgecolor='black', color='gray', alpha=0.7, rwidth=1.0)
+    ax.hist(hi_at_crossing, bins=5, edgecolor='black', color='gray', alpha=0.7, rwidth=1.0)
     
     # Calculate and plot Mean, Median, and 95% CI
     hi_series = pd.Series(hi_at_crossing)
@@ -68,8 +68,8 @@ def plot_hi_at_crossing_distribution(crossing_df: pd.DataFrame, rep_dir_map: dic
     
     ax.axvline(mean_hi, color='red', linestyle='--', linewidth=2, label=f'Mean HI: {mean_hi:.3f}')
     #ax.axvline(median_hi, color='orange', linestyle='-', linewidth=2, label=f'Median HI: {median_hi:.3f}')
-    ax.axvline(ci_lower, color='gray', linestyle=':', linewidth=1.5, label=f'95% CI: ({ci_lower:.3f}-{ci_upper:.3f})')
-    ax.axvline(ci_upper, color='gray', linestyle=':', linewidth=1.5)
+    ax.axvline(ci_lower, color='blue', linestyle=':', linewidth=1.5, label=f'95% CI: ({ci_lower:.3f}-{ci_upper:.3f})')
+    ax.axvline(ci_upper, color='blue', linestyle=':', linewidth=1.5)
     
     # Set up labels and title
     ax.set_xlabel("Mean Hybrid Index (HI) at Parental HET Intercept", fontsize=10)
@@ -89,7 +89,7 @@ if __name__ == "__main__":
     # --- 1. DEFINE FILE PATHS (FIXED PATH 1) ---
     
     # Base path for Replicates 1-50
-    BASE_DIR_1 = r"C:\Users\sg802\Documents\git_clone\hybrid_sim_project\input_data\simulation_outputs"
+    BASE_DIR_1 = r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs/"
     REPLICATE_IDS_1 = list(range(1, 51)) 
     
     # CORRECTED LOGIC: The 'results' folder is a sibling of 'simulation_outputs' 
@@ -103,7 +103,7 @@ if __name__ == "__main__":
     )
     
     # Base path for Replicates 51-100 (No Change Needed Here)
-    BASE_DIR_2 = r"C:\Users\sg802\Documents\git_clone\hybrid_sim_project\input_data\simulation_outputs_second_batch"
+    BASE_DIR_2 = r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_second_batch/"
     REPLICATE_IDS_2 = list(range(51, 101))
     
     # Determine the crossing file path for Batch 2 (using your specific file name)
