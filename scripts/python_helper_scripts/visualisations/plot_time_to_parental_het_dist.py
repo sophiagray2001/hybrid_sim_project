@@ -1,4 +1,4 @@
-import os 
+import os
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator 
@@ -34,10 +34,10 @@ def plot_crossing_time_distribution_combined(crossing_df: pd.DataFrame, ne_value
     # 2. Plot the Distribution (Histogram)
     fig, ax = plt.subplots(figsize=(10, 6))
     
-    # Use 15 bins, one for each Ne generation, up to 15
     # CHANGE: DOUBLE THE NUMBER OF BINS FOR TWICE THE RESOLUTION
     # 15 * 2 = 30 bins
-    num_bins = int(MAX_NE_TIME) * 2
+    #num_bins = int(MAX_NE_TIME) * 2
+    num_bins = 16
             
     # Plotting the histogram using the NE-SCALED DATA and NE-SCALED RANGE
     ax.hist(
@@ -91,7 +91,6 @@ def plot_crossing_time_distribution_combined(crossing_df: pd.DataFrame, ne_value
     # Enforce Y-axis ticks to be integers
     ax.yaxis.set_major_locator(MaxNLocator(integer=True))
     
-    #x.set_title(f"Distribution of HET Crossing Time Across All Replicates", fontsize=14)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.legend(loc='upper right')
@@ -102,52 +101,79 @@ def plot_crossing_time_distribution_combined(crossing_df: pd.DataFrame, ne_value
 
 
 if __name__ == "__main__":
-    # --- 1. DEFINE FILE PATHS (Using your last working local paths) ---
     
-    # Base path for Replicates 1-50
-    BASE_DIR_1 = "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs/"
-    INPUT_DATA_BASE = os.path.dirname(BASE_DIR_1) 
+    # --- 1. DEFINE FLEXIBLE BATCH CONFIGURATION ---
+    
+    # ----------------------------------------------------
+    # Configuration - EDIT THIS SECTION FOR SINGLE/MULTIPLE BATCHES
+    # ----------------------------------------------------
+    
+    # Define a list of crossing files to load.
+    CROSSING_FILE_CONFIGS = [
+        # Batch 1 Crossing File (Replicates 1-50)
+        {
+            "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_immigrationboth/",
+            "FILENAME": "combined_matching_generations_immigrationboth.csv"
+        }
+    ]
+    
+    # Define your effective population size (Ne)
+    N_E_VALUE = 200.0 
+    
+    # ----------------------------------------------------
+    
+    # Setup for Output Paths
+    
+    # Use the first BASE_DIR to determine the parent directory for the results folder
+    if not CROSSING_FILE_CONFIGS:
+        print("FATAL ERROR: No crossing file configurations defined. Aborting.")
+        exit(1)
+        
+    INPUT_DATA_BASE = os.path.dirname(CROSSING_FILE_CONFIGS[0]["BASE_DIR"].rstrip(os.sep))
     RESULTS_BASE_DIR = os.path.join(INPUT_DATA_BASE, "results")
-    
-    # CORRECTED PATH: Use RESULTS_BASE_DIR for the centralized CSV file
-    CROSSING_PATH_1 = os.path.join(
-        BASE_DIR_1,
-        "combined_matching_generations.csv" 
-    )
-    
-    # Base path for Replicates 51-100
-    BASE_DIR_2 = "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_second_batch/"
-    
-    # Path for the second batch's unique CSV file
-    CROSSING_PATH_2 = os.path.join(
-        BASE_DIR_2, 
-        "combined_matching_generations_second_batch.csv" 
-    )
 
     # Define the output path for the final combined plot
     COMBINED_PLOT_OUTPUT = os.path.join(
         RESULTS_BASE_DIR, 
-        "time_to_parent_het_distribution_combined_Ne_scaled.png" 
+        "time_to_parent_het_distribution_combined_Ne_scaled_both.png" 
     )
     
     # Ensure the output directory exists
     os.makedirs(os.path.dirname(COMBINED_PLOT_OUTPUT), exist_ok=True)
     
     # --- 2. LOAD AND CONCATENATE THE CROSSING DATA ---
-    print("Loading and combining crossing data from both directories...")
-    try:
-        df1 = pd.read_csv(CROSSING_PATH_1)
-        df2 = pd.read_csv(CROSSING_PATH_2)
-        combined_crossing_df = pd.concat([df1, df2], ignore_index=True)
-        print(f"Loaded a total of {len(combined_crossing_df)} replicates.")
-    except FileNotFoundError as e:
-        print(f"Error loading required crossing files: {e}")
-        exit(1)
+    all_dfs = []
     
-    # --- 3. DEFINE YOUR EFFECTIVE POPULATION SIZE ---
-    N_E_VALUE = 200.0 # Effective Population Size for scaling
-
-    # --- 4. RUN THE PLOTTING FUNCTION ---
+    print("Loading and combining crossing data from all configured directories...")
+    
+    for i, config in enumerate(CROSSING_FILE_CONFIGS):
+        crossing_path = os.path.join(config["BASE_DIR"], config["FILENAME"])
+        
+        print(f"  -> Loading Batch {i+1} from: {crossing_path}")
+        
+        try:
+            df = pd.read_csv(crossing_path)
+            all_dfs.append(df)
+            
+        except FileNotFoundError:
+            print(f"WARNING: Crossing file not found at: {crossing_path}")
+            print(f"Skipping Batch {i+1}.")
+            continue
+        except pd.errors.EmptyDataError:
+            print(f"WARNING: File is empty or not a valid CSV: {crossing_path}")
+            print(f"Skipping Batch {i+1}.")
+            continue
+            
+    # Check if any data was loaded
+    if not all_dfs:
+        print("FATAL ERROR: No crossing data files were successfully loaded. Aborting.")
+        exit(1)
+        
+    # Concatenate all loaded DataFrames
+    combined_crossing_df = pd.concat(all_dfs, ignore_index=True)
+    print(f"Loaded a total of {len(combined_crossing_df)} replicates.")
+    
+    # --- 3. RUN THE PLOTTING FUNCTION ---
     plot_crossing_time_distribution_combined(
         crossing_df=combined_crossing_df, 
         ne_value=N_E_VALUE,         

@@ -239,41 +239,84 @@ def plot_hi_het_overlay(all_replicate_dfs: dict, all_gen_labels: set, save_filen
 
 
 if __name__ == "__main__":
-    # --- 1. DEFINE DIRECTORIES AND REPLICATE IDs ---
+    # --- 1. DEFINE DIRECTORIES AND REPLICATE IDs FLEXIBLY ---
     
-    # Batch 1 (Replicates 1-50)
-    BASE_DIR_1 = "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs/"
-    REPLICATE_IDS_1 = list(range(1, 51))
+    # ----------------------------------------------------
+    # Configuration - EDIT THIS SECTION FOR SINGLE/DOUBLE BATCH
+    # ----------------------------------------------------
     
-    # Batch 2 (Replicates 51-100)
-    BASE_DIR_2 = "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_second_batch/"
-    REPLICATE_IDS_2 = list(range(51, 101))
+    # Define the batch(es) to load. 
+    # Option A: Single Batch (e.g., all 100 replicates in one folder)
+    BATCH_CONFIGS = [
+        {
+            "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_immigrationboth/",
+            "REPLICATE_IDS": list(range(1, 51)) # Replicates 1 through 100
+        }
+    ]
     
-    # Define a unique output file name for the combined run
+    # Option B: Two Separate Batches (Uncomment this section to use the original two paths)
+    # BATCH_CONFIGS = [
+    #     {
+    #         "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs/",
+    #         "REPLICATE_IDS": list(range(1, 51))
+    #     },
+    #     {
+    #         "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_second_batch/",
+    #         "REPLICATE_IDS": list(range(51, 101))
+    #     }
+    # ]
+    
+    # ----------------------------------------------------
+    
+    # Determine the overall replicate range for the output filename
+    # Assumes BATCH_CONFIGS is not empty
+    all_start_id = min(c["REPLICATE_IDS"][0] for c in BATCH_CONFIGS if c["REPLICATE_IDS"])
+    all_end_id = max(c["REPLICATE_IDS"][-1] for c in BATCH_CONFIGS if c["REPLICATE_IDS"])
+    
+    # Define the unique output file name using the first config's base directory
+    parent_dir = os.path.dirname(BATCH_CONFIGS[0]["BASE_DIR"].rstrip('/'))
     OVERLAY_PLOT_OUTPUT = os.path.join(
-        os.path.dirname(BASE_DIR_1.rstrip('/')), 
+        parent_dir,
         "results", 
-        "overlay_1_to_100.png" # Updated name to reflect new curated logic
+        f"overlay_1_50both.png"
     )
 
     # Ensure the output directory exists
     os.makedirs(os.path.dirname(OVERLAY_PLOT_OUTPUT), exist_ok=True)
     
-    # --- 2. LOAD DATA FROM BOTH BATCHES ---
-    print(f"Loading data from Batch 1 ({len(REPLICATE_IDS_1)} replicates)...")
-    dfs_batch_1, labels_batch_1 = load_replicate_data(BASE_DIR_1, REPLICATE_IDS_1)
+    # --- 2. LOAD AND MERGE DATA FROM ALL BATCHES ---
+    all_replicate_dfs = {}
+    all_gen_labels = set()
+    total_replicates_loaded = 0
     
-    print(f"Loading data from Batch 2 ({len(REPLICATE_IDS_2)} replicates)...")
-    dfs_batch_2, labels_batch_2 = load_replicate_data(BASE_DIR_2, REPLICATE_IDS_2)
+    for i, config in enumerate(BATCH_CONFIGS):
+        base_dir = config["BASE_DIR"]
+        rep_ids = config["REPLICATE_IDS"]
+        
+        # Skip if the replicate list is empty
+        if not rep_ids:
+            print(f"Skipping Batch {i+1}: No replicates defined.")
+            continue
+            
+        print(f"Loading data from Batch {i+1} ({len(rep_ids)} replicates) in: {base_dir}")
+        
+        # Load the data for the current batch
+        # NOTE: load_replicate_data must return a dict and a set
+        dfs_batch, labels_batch = load_replicate_data(base_dir, rep_ids)
+        
+        # Merge the dictionaries and update the labels set
+        all_replicate_dfs.update(dfs_batch)
+        all_gen_labels.update(labels_batch)
+        total_replicates_loaded += len(dfs_batch)
     
-    # --- 3. MERGE DATA ---
-    all_replicate_dfs = {**dfs_batch_1, **dfs_batch_2}
-    all_gen_labels = labels_batch_1.union(labels_batch_2)
+    # --- 3. PLOT COMBINED DATA ---
+    print(f"Plotting combined data for {total_replicates_loaded} total replicates.")
     
-    # --- 4. PLOT COMBINED DATA ---
-    print(f"Plotting combined data for {len(all_replicate_dfs)} total replicates.")
-    plot_hi_het_overlay(
-        all_replicate_dfs=all_replicate_dfs, 
-        all_gen_labels=all_gen_labels,
-        save_filename=OVERLAY_PLOT_OUTPUT
-    )
+    if total_replicates_loaded == 0:
+        print("ERROR: No replicate data was loaded. Aborting plot generation.")
+    else:
+        plot_hi_het_overlay(
+            all_replicate_dfs=all_replicate_dfs, 
+            all_gen_labels=all_gen_labels,
+            save_filename=OVERLAY_PLOT_OUTPUT
+        )
