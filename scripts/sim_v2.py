@@ -1566,7 +1566,7 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
     poPA = create_initial_populations_integrated(recomb_simulator, args.num_poPA, known_markers_data, 'PA')
     poPB = create_initial_populations_integrated(recomb_simulator, args.num_poPB, known_markers_data, 'PB')
     
-    '''#Commented out as takes up a lot of memory 
+    #Commented out as takes up a lot of memory 
     # Create a list to hold all genotype data
     all_genotype_data = []
     
@@ -1592,7 +1592,7 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
     df_genotypes.to_csv(output_file, index=False)
 
     print(f"\nGenotype data for PA and PB exported to {output_file}")
-    '''
+    
     # Collect initial founder locus data
     initial_locus_data = []
     for ind in poPA.individuals.values():
