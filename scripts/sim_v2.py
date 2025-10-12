@@ -1513,9 +1513,9 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
     # Output Arguments
     tracking_argument_group = parser.add_argument_group('Output Arguments')
     tracking_argument_group.add_argument("-on", "--output_name", type=str, default="results",
-                                          help="Base name for all output files (default: 'results').")
+                                         help="Base name for all output files (default: 'results').")
     tracking_argument_group.add_argument("-od", "--output_dir", type=str, default="simulation_outputs",
-                                          help="Directory to save output files (default: 'simulation_outputs').")
+                                         help="Directory to save output files (default: 'simulation_outputs').")
 
     args = parser.parse_args()
 
@@ -1565,8 +1565,8 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
     print("\nCreating initial populations (PA and PB)")
     poPA = create_initial_populations_integrated(recomb_simulator, args.num_poPA, known_markers_data, 'PA')
     poPB = create_initial_populations_integrated(recomb_simulator, args.num_poPB, known_markers_data, 'PB')
-    
-    #Commented out as takes up a lot of memory 
+    '''
+    # Original parent genotype saving block (uncommented for pipeline fix)
     # Create a list to hold all genotype data
     all_genotype_data = []
     
@@ -1592,7 +1592,7 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
     df_genotypes.to_csv(output_file, index=False)
 
     print(f"\nGenotype data for PA and PB exported to {output_file}")
-    
+'''
     # Collect initial founder locus data
     initial_locus_data = []
     for ind in poPA.individuals.values():
@@ -1613,7 +1613,7 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
     for ind in poPB.individuals.values():
         hi, het = recomb_simulator.calculate_hi_het(ind)
         initial_hi_het_data[ind.individual_id] = {'HI': hi, 'HET': het}
-            
+              
     initial_locus_data = initial_locus_df.to_dict('records')
 
     # Determine crossover mode and distribution
@@ -1631,32 +1631,32 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
             
 # --- START FINAL REVISED IMMIGRATION VALIDATION AND SETUP ---
 
-# All variables are initialized from the args object directly
-num_immigrants_pa = args.num_immigrants_pa
-num_immigrants_pb = args.num_immigrants_pb
-immigrate_start_gen_label = args.immigrate_start_gen # INITIALIZED HERE.
+    # All variables are initialized from the args object directly
+    num_immigrants_pa = args.num_immigrants_pa
+    num_immigrants_pb = args.num_immigrants_pb
+    immigrate_start_gen_label = args.immigrate_start_gen # INITIALIZED HERE.
 
-total_immigrants = num_immigrants_pa + num_immigrants_pb
+    total_immigrants = num_immigrants_pa + num_immigrants_pb
 
-if total_immigrants > 0:
-    # 1. Validation Check: If any immigration count is set, the start generation MUST be specified.
-    if not immigrate_start_gen_label:
-        print("\nERROR: Immigration counts were specified, but the starting generation label (--immigrate_start_gen_label) is missing.")
-        print("Please specify the generation label (e.g., --immigrate_start_gen_label HG2).")
-        exit(1)
+    if total_immigrants > 0:
+        # 1. Validation Check: If any immigration count is set, the start generation MUST be specified.
+        if not immigrate_start_gen_label:
+            print("\nERROR: Immigration counts were specified, but the starting generation label (--immigrate_start_gen_label) is missing.")
+            print("Please specify the generation label (e.g., --immigrate_start_gen_label HG2).")
+            exit(1)
 
-    # 2. Success Message: Report the detailed plan.
-    print("-" * 50)
-    print("IMMIGRATION ACTIVATED:")
-    print(f"  - PA Individuals: {num_immigrants_pa}")
-    print(f"  - PB Individuals: {num_immigrants_pb}")
-    print(f"  - Total Influx: {total_immigrants}")
-    print(f"  - Starting Gen: {immigrate_start_gen_label}")
-    print("-" * 50)
-    
-# NOTE: The 'else' block is not needed here. If total_immigrants == 0, 
-# 'immigrate_start_gen_label' remains whatever the user set it to (default None), 
-# which is correct for the function call.
+        # 2. Success Message: Report the detailed plan.
+        print("-" * 50)
+        print("IMMIGRATION ACTIVATED:")
+        print(f"  - PA Individuals: {num_immigrants_pa}")
+        print(f"  - PB Individuals: {num_immigrants_pb}")
+        print(f"  - Total Influx: {total_immigrants}")
+        print(f"  - Starting Gen: {immigrate_start_gen_label}")
+        print("-" * 50)
+        
+    # NOTE: The 'else' block is not needed here. If total_immigrants == 0, 
+    # 'immigrate_start_gen_label' remains whatever the user set it to (default None), 
+    # which is correct for the function call.
 
 # --- END FINAL REVISED IMMIGRATION VALIDATION AND SETUP ---
 
@@ -1695,7 +1695,7 @@ if total_immigrants > 0:
     # Start the timer
     start_time = time.time()
 
-# Run the simulation
+    # Run the simulation
     print("Starting simulation")
     populations_dict, hi_het_data = simulate_generations(
         simulator=recomb_simulator,
