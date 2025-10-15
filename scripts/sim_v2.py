@@ -770,7 +770,6 @@ def perform_batch_cross_task(batch_of_tasks):
     for task in batch_of_tasks:
         batch_results.append(perform_cross_task(task, num_chromosomes))
     return batch_results
-
 def simulate_generations(
     simulator,
     initial_poPA,
@@ -783,28 +782,43 @@ def simulate_generations(
     track_junctions,
     output_locus, # This flag should be used to control locus output
     verbose,
-    # REVISED ARGUMENTS: num_immigrants replaced by two specific counts (passed via args)
-    immigrate_start_gen_label,
+    # REVISED ARGUMENTS: immigrate_start_gen_label is now retrieved from args
+    immigrate_start_gen_label, # Keeping this here for now, but will use args.immigrate_start_gen_label
     max_processes,
     args # Pass the args object here
 ):
     """
     Runs the simulation for the specified generations based on the crossing plan.
-    
-    EXPECTED ARGS INPUT:
-    - args.num_immigrants_pa: Number of PA individuals to inject.
-    - args.num_immigrants_pb: Number of PB individuals to inject.
     """
+    import os
+    import csv
+    import numpy as np
+    import random
+    
+    # Pre-calculate the index where immigration should start
+    try:
+        # Find the index of the start label in the list of all generation labels from the crossing plan
+        all_gen_labels = [cross['generation_label'] for cross in crossing_plan]
+        immigrate_start_index = all_gen_labels.index(immigrate_start_gen_label)
+    except ValueError:
+        immigrate_start_index = -1 # Indicates the label wasn't found
+        
+    # Retrieve the new interval setting from args (defaulting to 1 if not set)
+    immigrate_interval = getattr(args, 'immigrate_interval', 1)
+
     populations_dict = {'PA': initial_poPA, 'PB': initial_poPB}
     
     hi_het_data = {}
     
-    immigrate_active = False
+    # We no longer need this flag, as the logic will check the index directly.
+    # immigrate_active = False 
     
     # Correctly build the output directory based on argparse defaults
     output_dir = os.path.join(args.output_dir, "results")
     os.makedirs(output_dir, exist_ok=True)
     output_path_prefix = os.path.join(output_dir, args.output_name)
+
+    # ... (File setup and header writing remains the same) ...
 
     # Open files for incremental writing only if their flags are set
     locus_file = open(f"{output_path_prefix}_locus_genotype_data.csv", 'w', newline='') if output_locus else None
@@ -833,8 +847,8 @@ def simulate_generations(
         all_future_parents.add(cross['parent1_label'])
         all_future_parents.add(cross['parent2_label'])
 
-    # Iterate through the crossing plan
-    for cross in crossing_plan:
+    # Iterate through the crossing plan using an index to track the generation number
+    for current_cross_index, cross in enumerate(crossing_plan): # <-- New Index Tracking
         gen_label = cross['generation_label']
         parent1_label = cross['parent1_label']
         parent2_label = cross['parent2_label']
@@ -843,6 +857,8 @@ def simulate_generations(
         if verbose:
             print(f"\n Simulating Generation {gen_label} ({cross_type}) ")
 
+        # ... (Parent Selection Logic remains the same) ...
+        
         # PARENT SELECTION LOGIC
         parent1_pop = populations_dict.get(parent1_label)
         parent2_pop = populations_dict.get(parent2_label)
@@ -874,20 +890,27 @@ def simulate_generations(
 
         new_pop = Population(gen_label)
 
-        # --- START REVISED IMMIGRATION LOGIC ---
+        # --- START REVISED IMMIGRATION LOGIC (PULSED) ---
         
         num_immigrants_pa = getattr(args, 'num_immigrants_pa', 0)
         num_immigrants_pb = getattr(args, 'num_immigrants_pb', 0)
-        
+        total_immigrants = num_immigrants_pa + num_immigrants_pb
+
         total_immigrants_added = 0
         immigrant_counter_start = 1
         immigrant_pedigree_data = [] 
         
-        # Determine if immigration is active for this generation
-        if immigrate_start_gen_label and gen_label == immigrate_start_gen_label:
-            immigrate_active = True
+        # NEW LOGIC: Check start generation and interval condition
+        perform_immigration = (
+            total_immigrants > 0 and 
+            current_cross_index >= immigrate_start_index and
+            (current_cross_index - immigrate_start_index) % immigrate_interval == 0
+        )
         
-        if immigrate_active:
+        if perform_immigration:
+            if verbose:
+                 print(f"--- PULSED IMMIGRATION ACTIVE: {gen_label} (Interval {immigrate_interval}) ---")
+                 
             # Structure the immigration event based on new individual flags
             injection_plan = [
                 ('PA', num_immigrants_pa),
@@ -905,7 +928,7 @@ def simulate_generations(
                         # 1. Create the new unique ID: GenLabel_I_N (e.g., HG2_I_1, HG2_I_2)
                         individual_id = f"{gen_label}_I_{immigrant_counter_start}"
                         
-                        # 2. Create the pure founder
+                        # 2. Create the pure immigrant
                         new_immigrant = simulator.create_pure_immigrant(
                             individual_id=individual_id,
                             generation=gen_label,
@@ -933,17 +956,26 @@ def simulate_generations(
                 if verbose:
                     print(f"Writing {len(immigrant_pedigree_data)} immigrant founder records.")
                 ancestry_writer.writerows(immigrant_pedigree_data)
+        
+        else:
+            # If immigration is skipped, ensure total_immigrants_added is zero
+            total_immigrants_added = 0
+            if verbose and total_immigrants > 0 and current_cross_index >= immigrate_start_index:
+                 print(f"--- PULSED IMMIGRATION SKIPPED: {gen_label} (Next pulse in {immigrate_interval - ((current_cross_index - immigrate_start_index) % immigrate_interval)} gen) ---")
 
-        # --- END REVISED IMMIGRATION LOGIC ---
+
+        # --- END REVISED IMMIGRATION LOGIC (PULSED) ---
 
         # Store the IDs of the immigrants added in this step for later protection from removal
-        immigrant_ids = set(new_pop.individuals.keys())
+        # immigrant_ids is not used here but could be if you needed to protect them further
+        # immigrant_ids = set(new_pop.individuals.keys())
 
         # Set the starting counter for offspring based on how many individuals were created (immigrants)
         offspring_counter = len(new_pop.individuals)
         
         mating_tasks = []
         
+        # ... (Rest of the mating and offspring creation logic remains the same) ...
         for p1, p2 in parent_pairs:
             num_offspring_to_generate = int(np.random.choice(
                 list(number_offspring.keys()), 
@@ -1000,7 +1032,8 @@ def simulate_generations(
         num_to_remove = total_immigrants_added 
         
         # Only perform removal if immigrants were added in this generation
-        if immigrate_active and num_to_remove > 0:
+        # We check total_immigrants_added which is > 0 only if immigration occurred in this gen
+        if num_to_remove > 0: 
             
             # Ensure we have enough individuals to remove
             if num_to_remove > len(bred_offspring_ids):
@@ -1490,7 +1523,9 @@ Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0
     simple_group.add_argument('--num_immigrants_pa', type=int, default=0, help='The number of pure PA individuals to inject as immigrants.')
     simple_group.add_argument('--num_immigrants_pb', type=int, default=0, help='The number of pure PB individuals to inject as immigrants.')
     simple_group.add_argument('--immigrate_start_gen', type=str, default=None, help='The generation label (e.g. HG2) at which immigration begins.')
-
+    simple_group.add_argument('--immigrate_interval', type=int, default=1, # Default of 1 means immigration happens every generation (current behavior) 
+    help='The number of generations between immigration events. Default is 1 (every generation).'
+)
     # Tracking and Output
     tracking_group = parser.add_argument_group('Tracking and Output Options')
     tracking_group.add_argument("-pr", "--pedigree_recording", action="store_true",
