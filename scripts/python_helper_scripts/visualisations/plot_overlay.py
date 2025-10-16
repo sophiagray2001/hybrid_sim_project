@@ -70,6 +70,7 @@ def load_replicate_data(base_output_dir: str, replicate_ids: list):
 
 
 # --- PLOTTING FUNCTION (Consolidated, Improved, and Curated) ---
+# --- PLOTTING FUNCTION (Consolidated, Improved, and Curated) ---
 def plot_hi_het_overlay(all_replicate_dfs: dict, all_gen_labels: set, save_filename: str):
     """
     Plots the combined HI vs. HET paths, including all replicates and the grand mean.
@@ -87,6 +88,8 @@ def plot_hi_het_overlay(all_replicate_dfs: dict, all_gen_labels: set, save_filen
     all_sorted_gen_labels = sorted(grand_mean_df.index, key=sort_key)
     grand_mean_df = grand_mean_df.loc[all_sorted_gen_labels]
     
+    # ... (Curated Replicate Selection Logic remains the same) ...
+
     # ----------------------------------------------------------------------
     # --- CURATED REPLICATE SELECTION (New Logic) ---
     # ----------------------------------------------------------------------
@@ -133,8 +136,8 @@ def plot_hi_het_overlay(all_replicate_dfs: dict, all_gen_labels: set, save_filen
     HIGHLIGHT_COLORS = {}
     if len(curated_reps) >= 3:
         HIGHLIGHT_COLORS[curated_reps[0]] = 'blue'    # Random Path
-        HIGHLIGHT_COLORS[curated_reps[1]] = 'red'     # Mean Follower Path
-        HIGHLIGHT_COLORS[curated_reps[2]] = 'orange'  # Outlier Path
+        HIGHLIGHT_COLORS[curated_reps[1]] = 'red'      # Mean Follower Path
+        HIGHLIGHT_COLORS[curated_reps[2]] = 'orange' # Outlier Path
     # ----------------------------------------------------------------------
     
     # 2. Setup Plot
@@ -146,7 +149,7 @@ def plot_hi_het_overlay(all_replicate_dfs: dict, all_gen_labels: set, save_filen
     
     num_reps = len(all_replicate_dfs) # Define num_reps here for the title later
 
-    # 3. Plot Stochastic Paths
+    # 3. Plot Stochastic Paths (remains the same)
     path_start_gen = 'HG1' 
     
     for rep_id, df in all_replicate_dfs.items():
@@ -156,14 +159,14 @@ def plot_hi_het_overlay(all_replicate_dfs: dict, all_gen_labels: set, save_filen
             # Default style for background paths
             color = 'gray' 
             linewidth = 1
-            alpha = 0.15 # IMPROVED: Reduced alpha for background paths
+            alpha = 0.15 
             label = None
             zorder = 2
             
             # Apply highlight style for selected paths
             if rep_id in HIGHLIGHT_COLORS:
                 color = HIGHLIGHT_COLORS[rep_id]
-                linewidth = 2.0 # IMPROVED: Slightly thicker highlighted paths
+                linewidth = 2.0 
                 alpha = 1.0
                 zorder = 4 
                 
@@ -176,15 +179,15 @@ def plot_hi_het_overlay(all_replicate_dfs: dict, all_gen_labels: set, save_filen
                     color=color, linestyle='-', linewidth=linewidth, 
                     alpha=alpha, zorder=zorder, label=label) 
 
-    # 4. Plot the Mean Path 
+    # 4. Plot the Mean Path (remains the same) 
     if path_start_gen in grand_mean_df.index:
         grand_path_df = grand_mean_df.iloc[grand_mean_df.index.get_loc(path_start_gen):] 
         ax.plot(grand_path_df['mean_HI'], grand_path_df['mean_HET'],
-                color='black', linestyle='--', linewidth=3, alpha=1.0, zorder=5, label='Mean Path') # IMPROVED: Thicker mean path
+                color='black', linestyle='--', linewidth=3, alpha=1.0, zorder=5, label='Mean Path') 
                 
     # 5. Highlight Key Points (PA, PB, HG1, Grand Mean Last Gen)
 
-    # Plot Triangle Edges
+    # Plot Triangle Edges (remains the same)
     triangle_edges = [
         [(0.0, 0.0), (0.5, 1.0)], [(0.5, 1.0), (1.0, 0.0)], [(0.0, 0.0), (1.0, 0.0)]
     ]
@@ -198,7 +201,28 @@ def plot_hi_het_overlay(all_replicate_dfs: dict, all_gen_labels: set, save_filen
         'HG1': (0.01, 0.01),  # Right and Up
         'Final': (0.01, -0.03)# Right and Down
     }
-    # Highlight PA, PB, HG1, and the final generation
+    
+    # ----------------------------------------------------------------------
+    # --- HARD-CODED POINT HIGHLIGHT (NEW SECTION) ---
+    # ----------------------------------------------------------------------
+    TARGET_GEN = 'HG1468'
+    
+    if TARGET_GEN in grand_mean_df.index:
+        mean_data = grand_mean_df.loc[TARGET_GEN]
+        
+        # Plot the point
+        ax.scatter(mean_data['mean_HI'], mean_data['mean_HET'],
+                   color='green', s=150, edgecolors='black', linewidth=1.5, zorder=7, 
+                   label=f'{TARGET_GEN} Mean Point') 
+        
+        # Label the point
+        ax.annotate(TARGET_GEN, 
+                    (mean_data['mean_HI'], mean_data['mean_HET']), 
+                    xytext=(mean_data['mean_HI'] - 0.01, mean_data['mean_HET'] + 0.03), # Custom offset for F2
+                    fontsize=12, color='green', ha='right', va='bottom', zorder=8)
+    # ----------------------------------------------------------------------
+
+    # Highlight PA, PB, HG1, and the final generation (Original logic adapted)
     points_to_label = ['PA', 'PB', 'HG1', all_sorted_gen_labels[-1]] 
     
     for gen_name in points_to_label:
@@ -224,13 +248,13 @@ def plot_hi_het_overlay(all_replicate_dfs: dict, all_gen_labels: set, save_filen
                         xytext=(mean_data['mean_HI'] + dx, mean_data['mean_HET'] + dy),
                         fontsize=10, color='black', ha='left', va='bottom', zorder=7)
 
-    # Final settings
+    # Final settings (remains the same)
     ax.set_xlim(-0.05, 1.05)
     ax.set_ylim(-0.05, 1.05)
     ax.set_aspect('equal', adjustable='box')
     ax.grid(False)
 
-    # Add Legend
+    # Add Legend (remains the same)
     ax.legend(loc='upper right', frameon=True, fontsize=10)
 
     plt.savefig(save_filename, bbox_inches='tight')
@@ -246,25 +270,21 @@ if __name__ == "__main__":
     # ----------------------------------------------------
     
     # Define the batch(es) to load. 
-    # Option A: Single Batch (e.g., all 100 replicates in one folder)
+    # Option B: Two Separate Batches (Configured for Replicates 1-50 and 51-100)
     BATCH_CONFIGS = [
         {
-            "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_immigrationboth/",
-            "REPLICATE_IDS": list(range(1, 51)) # Replicates 1 through 100
+            # This is the folder containing replicates 1 through 50
+            "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_immigration_interval_1/",
+            "REPLICATE_IDS": list(range(1, 51)) # Replicates 1 through 50 (exclusive end)
         }
     ]
-    
-    # Option B: Two Separate Batches (Uncomment this section to use the original two paths)
-    # BATCH_CONFIGS = [
-    #     {
-    #         "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs/",
-    #         "REPLICATE_IDS": list(range(1, 51))
-    #     },
-    #     {
-    #         "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_second_batch/",
-    #         "REPLICATE_IDS": list(range(51, 101))
-    #     }
-    # ]
+        #{
+            # This is the folder containing replicates 51 through 100
+            # Assuming the path you provided for 51-100 is a subfolder of the first path's parent
+           # "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_unlinked_closed/simulation_outputs_closed_unlinked_51_100/",
+            #"REPLICATE_IDS": list(range(51, 101)) # Replicates 51 through 100 (exclusive end)
+        #}
+    #]
     
     # ----------------------------------------------------
     
@@ -274,11 +294,13 @@ if __name__ == "__main__":
     all_end_id = max(c["REPLICATE_IDS"][-1] for c in BATCH_CONFIGS if c["REPLICATE_IDS"])
     
     # Define the unique output file name using the first config's base directory
+    # NOTE: The parent directory is derived from the first path.
     parent_dir = os.path.dirname(BATCH_CONFIGS[0]["BASE_DIR"].rstrip('/'))
     OVERLAY_PLOT_OUTPUT = os.path.join(
         parent_dir,
         "results", 
-        f"overlay_1_50both.png"
+        # UPDATED FILENAME to reflect the full 1_100 range
+        f"overlay_{all_start_id}_{all_end_id}_bidirectional_1.png"
     )
 
     # Ensure the output directory exists
