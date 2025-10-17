@@ -3,24 +3,25 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 import re
-import scipy
+import scipy.stats 
 import numpy as np 
 
-# --- REVISED FUNCTION: PLOTTING MULTIPLE KDE LINES (with color harmonization and no title) ---
+# --- REVISED FUNCTION: PLOTTING MULTIPLE KDE LINES (with legend moved) ---
 def plot_crossing_time_distribution_multiple(
     data_list: list,  
     ne_value: float, 
     save_filename: str,
-    plot_title: str = None # Removed from the argument list, but kept for function signature consistency if needed later
+    plot_title: str = None
 ):
     """
     Plots the distribution of generations required for HET to decrease to 
-    the parental mean level for multiple datasets, with all statistical 
-    lines harmonized to the color of their respective KDE curve, and no plot title.
+    the parental mean level for multiple datasets, with clipped KDE tails 
+    and the legend moved outside the plot area.
     """
     fig, ax = plt.subplots(figsize=(10, 6))
     
-    MAX_NE_TIME = 3000 / ne_value 
+    # We will use the observed max time across all datasets to set the x-limit
+    MAX_NE_TIME = 15.0 
     
     # Lists to hold handles and labels for the final, custom legend
     line_handles = []
@@ -33,18 +34,18 @@ def plot_crossing_time_distribution_multiple(
         kde_color = data_config['color'] # The color of the KDE curve
 
         # --- Determine unique styles/colors for the statistics lines ---
-        # ALL statistical lines will now use the KDE color, only the style changes
         mean_color = kde_color
         ci_color = kde_color
         
         if i == 0:
-            # Styles for the Primary Line (Unlinked)
-            mean_ls = '--' # Redefining the Mean to be the blue KDE color, but dashed
-            ci_ls = ':'    # Redefining the CI to be the blue KDE color, but dotted
-        else:
-            # Styles for Secondary Lines (e.g., Linked)
+            mean_ls = '--' 
+            ci_ls = ':' 
+        elif i == 1:
             mean_ls = '-.'
             ci_ls = (0, (1, 5)) 
+        else: # i >= 2
+            mean_ls = (0, (3, 1, 1, 1))
+            ci_ls = (0, (1, 1))
         
         if crossing_df.empty:
             print(f"Warning: DataFrame for '{label}' is empty. Skipping.")
@@ -58,21 +59,33 @@ def plot_crossing_time_distribution_multiple(
             continue
             
         crossing_times_ne = [t / ne_value for t in crossing_times_g]
-        crossing_series_ne = pd.Series(crossing_times_ne)
         
-        # 2. Plot the main KDE curve (Density Plot) for THIS dataset
-        kde_handle = crossing_series_ne.plot(
-            kind='kde',
-            ax=ax,
-            color=kde_color, # Use the KDE color
+        # 2. MANUALLY CALCULATE and PLOT the KDE curve (Clipped Tails)
+        
+        data_min = np.min(crossing_times_ne)
+        data_max = np.max(crossing_times_ne)
+        
+        x_range = np.linspace(
+            max(0, data_min - 0.5), 
+            min(MAX_NE_TIME, data_max + 0.5),
+            500 
+        )
+        
+        kde = scipy.stats.gaussian_kde(crossing_times_ne)
+        density = kde(x_range)
+        
+        kde_handle = ax.plot(
+            x_range,
+            density,
+            color=kde_color, 
             linewidth=3,
             zorder=2,
             label=f'{label}'
         )
-        line_handles.append(kde_handle.lines[-1])
+        line_handles.append(kde_handle[0])
         line_labels.append(f'{label}')
 
-        # 3. Calculate and plot statistics for THIS dataset
+        # 3. Calculate and plot statistics for THIS dataset (remains the same)
         crossing_series_g = pd.Series(crossing_times_g)
         
         mean_time_ne = crossing_series_g.mean() / ne_value
@@ -82,7 +95,7 @@ def plot_crossing_time_distribution_multiple(
         # Mean line
         ax.axvline(
             mean_time_ne, 
-            color=mean_color, # Harmonized color
+            color=mean_color, 
             linestyle=mean_ls, 
             linewidth=2, 
             zorder=3,
@@ -92,13 +105,10 @@ def plot_crossing_time_distribution_multiple(
         ax.axvline(ci_upper_ne, color=ci_color, linestyle=ci_ls, linewidth=1.5, zorder=3)
         
         # --- Add STATS to custom legend lists ---
-        
-        # Add Mean
         mean_handle = plt.Line2D([0], [0], color=mean_color, linestyle=mean_ls, linewidth=2)
         line_handles.append(mean_handle)
         line_labels.append(f'{label} Mean: {mean_time_ne:.2f} Ne Gens')
         
-        # Add 95% CI
         ci_handle = plt.Line2D([0], [0], color=ci_color, linestyle=ci_ls, linewidth=1.5)
         line_handles.append(ci_handle)
         line_labels.append(f'{label} 95% CI: ({ci_lower_ne:.2f}-{ci_upper_ne:.2f})')
@@ -116,13 +126,15 @@ def plot_crossing_time_distribution_multiple(
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     
-    # Final Legend
-    ax.legend(line_handles, line_labels, loc='upper right')
+    # ?? UPDATED LEGEND LOCATION ??
+    ax.legend(
+        line_handles, 
+        line_labels, 
+        loc='upper left',        # Anchor point (relative to the legend box)
+        bbox_to_anchor=(1.05, 1) # Coordinates outside the plot area (top right)
+    )
     
-    # --- REMOVED PLOT TITLE HERE ---
-    if plot_title:
-        plt.title(plot_title, fontsize=14)
-    
+    # Save the figure. We use bbox_inches='tight' to ensure the legend is included.
     plt.savefig(save_filename, bbox_inches='tight')
     plt.close()
     print(f"\nMultiple time distribution (KDE) plot saved to: {save_filename}")
@@ -141,25 +153,29 @@ if __name__ == "__main__":
         {
             "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_unlinked_closed/",
             "FILENAME": "combined_matching_generations.csv",
-        },
-        {
-            "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_unlinked_closed/simulation_outputs_closed_unlinked_51_100/", 
-            "FILENAME": "combined_matching_generations_second_batch.csv",
         }
     ]
     
     # B. CONFIGS FOR ANY *OTHER* DATASETS TO BE PLOTTED SEPARATELY
     SECONDARY_PLOTTING_CONFIGS = [
-        # Linked Loci
+        # Linked Loci (Secondary, Orange) - NOW FILTERED TO FIRST 50 REPLICATES
         {
              "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_linked_closed/", 
              "FILENAME": "combined_matching_generations_linked_closed.csv",
              "LABEL": "Linked Loci",
-             "COLOR": "#ff7f0e" # Distinct Orange
+             "COLOR": "#ff7f0e", # Distinct Orange
+             "REPLICATE_LIMIT": 50 # Limit this dataset to the first 50 unique replicates
+        },
+        # 20 Chromosomes (Tertiary, Red) 
+        {
+             "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_closed_20chr/", 
+             "FILENAME": "combined_matching_generations_closed_20chr.csv",
+             "LABEL": "20 Chromosomes",
+             "COLOR": "#d62728" # Distinct Red
         }
     ]
     
-    # --- Setup Output Paths (remains unchanged) ---
+    # --- Setup Output Paths ---
     if not UNLINKED_BATCH_CONFIGS:
         print("FATAL ERROR: No unlinked batch configurations defined. Aborting.")
         exit(1)
@@ -169,7 +185,7 @@ if __name__ == "__main__":
 
     COMBINED_PLOT_OUTPUT = os.path.join(
         RESULTS_BASE_DIR, 
-        "time_to_parent_het_distribution_MULTIPLE_KDE_Ne_scaled_v5_clean.png" # Updated filename
+        "KDE_Ne_scaled_v8_legend_moved.pdf" # Updated filename to reflect legend move
     )
     os.makedirs(os.path.dirname(COMBINED_PLOT_OUTPUT), exist_ok=True)
     
@@ -182,7 +198,7 @@ if __name__ == "__main__":
         try:
             df = pd.read_csv(crossing_path)
             unlinked_dfs.append(df)
-            print(f"  -> Successfully loaded Unlinked Batch {i+1} ({len(df)} replicates)")
+            print(f"  -> Successfully loaded Unlinked Batch {i+1} ({len(df)} rows)")
         except (FileNotFoundError, pd.errors.EmptyDataError):
             print(f"WARNING: Unlinked file not found or empty at: {crossing_path}. Skipping.")
             
@@ -191,6 +207,7 @@ if __name__ == "__main__":
         exit(1)
 
     combined_unlinked_df = pd.concat(unlinked_dfs, ignore_index=True)
+    print(f"Combined Unlinked Data has {len(combined_unlinked_df)} rows.")
     
     # --- 3. BUILD THE FINAL PLOTTING LIST ---
     plotting_data_list = []
@@ -205,14 +222,26 @@ if __name__ == "__main__":
     # Load and add any Secondary Datasets
     for config in SECONDARY_PLOTTING_CONFIGS:
         crossing_path = os.path.join(config["BASE_DIR"], config["FILENAME"])
+        limit = config.get("REPLICATE_LIMIT") 
+        
         try:
             df = pd.read_csv(crossing_path)
+            
+            # --- APPLY SLICING FOR REPLICATE_LIMIT ---
+            if limit is not None:
+                df['replicate_id'] = df['matching_hybrid_gen'].str.extract(r'(HG\d+)').iloc[:, 0]
+                first_replicates = df['replicate_id'].dropna().unique()[:limit]
+                df = df[df['replicate_id'].isin(first_replicates)]
+                print(f"  -> Sliced data for {config['LABEL']} to {len(first_replicates)} unique replicates.")
+            
+            # Add the (potentially filtered) DataFrame to the plotting list
             plotting_data_list.append({
                 'df': df,
                 'label': config['LABEL'],
                 'color': config['COLOR']
             })
-            print(f"  -> Loaded secondary dataset: {config['LABEL']} ({len(df)} replicates)")
+            print(f"  -> Loaded secondary dataset: {config['LABEL']} ({len(df)} rows)")
+            
         except (FileNotFoundError, pd.errors.EmptyDataError) as e:
             print(f"WARNING: Secondary file error for {config['LABEL']} at {crossing_path}: {e}. Skipping.")
 

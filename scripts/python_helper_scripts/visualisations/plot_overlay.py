@@ -19,9 +19,14 @@ def sort_key(label):
         
     # Check for BCx labels
     if label.startswith('BC'): 
-        try: return (2, int(label[2:-1]), label[-1])
+        # Check if the last character is a non-digit (A or B), then parse the number
+        if label[-1].isalpha():
+            try: return (2, int(label[2:-1]), label[-1])
+            except ValueError: pass
+        # Handle cases like BC1 without A/B suffix
+        try: return (2, int(label[2:]), '')
         except ValueError: pass
-    
+        
     # Handle HGx labels (Hybrid Generations)
     if label.startswith('HG'):
         try: return (3, int(label[2:]), '')
@@ -70,7 +75,6 @@ def load_replicate_data(base_output_dir: str, replicate_ids: list):
 
 
 # --- PLOTTING FUNCTION (Consolidated, Improved, and Curated) ---
-# --- PLOTTING FUNCTION (Consolidated, Improved, and Curated) ---
 def plot_hi_het_overlay(all_replicate_dfs: dict, all_gen_labels: set, save_filename: str):
     """
     Plots the combined HI vs. HET paths, including all replicates and the grand mean.
@@ -88,8 +92,6 @@ def plot_hi_het_overlay(all_replicate_dfs: dict, all_gen_labels: set, save_filen
     all_sorted_gen_labels = sorted(grand_mean_df.index, key=sort_key)
     grand_mean_df = grand_mean_df.loc[all_sorted_gen_labels]
     
-    # ... (Curated Replicate Selection Logic remains the same) ...
-
     # ----------------------------------------------------------------------
     # --- CURATED REPLICATE SELECTION (New Logic) ---
     # ----------------------------------------------------------------------
@@ -212,8 +214,8 @@ def plot_hi_het_overlay(all_replicate_dfs: dict, all_gen_labels: set, save_filen
         
         # Plot the point
         ax.scatter(mean_data['mean_HI'], mean_data['mean_HET'],
-                   color='green', s=150, edgecolors='black', linewidth=1.5, zorder=7, 
-                   label=f'{TARGET_GEN} Mean Point') 
+                    color='green', s=150, edgecolors='black', linewidth=1.5, zorder=7, 
+                    label=f'{TARGET_GEN} Mean Point') 
         
         # Label the point
         ax.annotate(TARGET_GEN, 
@@ -274,17 +276,17 @@ if __name__ == "__main__":
     BATCH_CONFIGS = [
         {
             # This is the folder containing replicates 1 through 50
-            "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_immigration_interval_1/",
+            "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_extreme_linkage/",
             "REPLICATE_IDS": list(range(1, 51)) # Replicates 1 through 50 (exclusive end)
         }
     ]
-        #{
+        # {
             # This is the folder containing replicates 51 through 100
             # Assuming the path you provided for 51-100 is a subfolder of the first path's parent
-           # "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_unlinked_closed/simulation_outputs_closed_unlinked_51_100/",
+            #"BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_unlinked_closed/simulation_outputs_closed_unlinked_51_100/",
             #"REPLICATE_IDS": list(range(51, 101)) # Replicates 51 through 100 (exclusive end)
         #}
-    #]
+    # ]
     
     # ----------------------------------------------------
     
@@ -295,13 +297,18 @@ if __name__ == "__main__":
     
     # Define the unique output file name using the first config's base directory
     # NOTE: The parent directory is derived from the first path.
+
+    # Define the unique output file name using the first config's base directory
+    # NOTE: The parent directory is derived from the first path.
     parent_dir = os.path.dirname(BATCH_CONFIGS[0]["BASE_DIR"].rstrip('/'))
     OVERLAY_PLOT_OUTPUT = os.path.join(
         parent_dir,
         "results", 
         # UPDATED FILENAME to reflect the full 1_100 range
-        f"overlay_{all_start_id}_{all_end_id}_bidirectional_1.png"
+        # Change the extension from .png to .pdf here:
+        f"overlay_{all_start_id}_{all_end_id}_extreme_linkage.png" 
     )
+
 
     # Ensure the output directory exists
     os.makedirs(os.path.dirname(OVERLAY_PLOT_OUTPUT), exist_ok=True)
