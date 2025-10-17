@@ -8,24 +8,24 @@ from scipy.stats import gaussian_kde
 # --- Configuration for all three datasets (UPDATED with Hex Codes) ---
 # The order in this dictionary determines the style applied (i=0, i=1, i=2)
 DATASET_CONFIGS = {
-    "Unlinked": {
-        "BASE_DIR": r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_unlinked_closed/",
+    "Tight Linkage": {
+        "BASE_DIR": r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_extreme_linkage_0.05/",
         "REPLICATE_IDS": list(range(1, 51)),
-        "CROSSING_FILENAME": "combined_matching_generations.csv",
+        "CROSSING_FILENAME": "combined_matching_generations_extreme_linkage_0.05.csv",
         "color": "#1f77b4" # Blue
-    },
-    "Linked": {
-        "BASE_DIR": r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_linked_closed/",
-        "REPLICATE_IDS": list(range(1, 51)),
-        "CROSSING_FILENAME": "combined_matching_generations_linked_closed.csv",
-        "color": "#ff7f0e" # Orange
-    },
-    "20 Chromosomes": {
-        "BASE_DIR": r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_closed_20chr/",
-        "REPLICATE_IDS": list(range(1, 51)),
-        "CROSSING_FILENAME": "combined_matching_generations_closed_20chr.csv",
-        "color": "#d62728" # Red
-    }
+    }#,
+    #"Linked": {
+    #    "BASE_DIR": r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_linked_closed/",
+    #    "REPLICATE_IDS": list(range(1, 51)),
+    #    "CROSSING_FILENAME": "combined_matching_generations_linked_closed.csv",
+    #    "color": "#ff7f0e" # Orange
+    #},
+    #"20 Chromosomes": {
+    #    "BASE_DIR": r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_closed_20chr/",
+    #    "REPLICATE_IDS": list(range(1, 51)),
+    #    "CROSSING_FILENAME": "combined_matching_generations_closed_20chr.csv",
+    #    "color": "#d62728" # Red
+    #}
 }
 
 # --- Function to Extract HI at the Crossing Point for a single dataset (UNCHANGED) ---
@@ -89,12 +89,19 @@ def extract_hi_at_crossing(config_name: str, config: dict) -> pd.DataFrame:
     return pd.DataFrame(hi_at_crossing_data)
 
 
-# --- Function to Plot the Distribution (KDE) with Distinct Statistics Lines (UNCHANGED) ---
+# --- Function to Plot the Distribution (KDE) with Distinct Statistics Lines (MODIFIED) ---
 
-def plot_hi_crossing_kde(combined_df: pd.DataFrame, dataset_configs: dict, save_filename: str):
+def plot_hi_crossing_kde(
+    combined_df: pd.DataFrame, 
+    dataset_configs: dict, 
+    save_filename: str,
+    bw_adjustment: float = 1.0 # NEW parameter for bandwidth (smoothness) adjustment
+):
     """
     Generates a combined KDE plot for all datasets, showing HI distribution
     at the HET crossing point, using SOLID KDE lines and DISTINCT Mean/CI line styles.
+    
+    The bw_adjustment parameter controls KDE smoothness: < 1.0 is less smooth, > 1.0 is smoother.
     """
     print("\n--- Generating Custom Styled HI KDE Plot (Fixed Alignment) ---")
     
@@ -118,7 +125,8 @@ def plot_hi_crossing_kde(combined_df: pd.DataFrame, dataset_configs: dict, save_
         linewidth=2.5,
         ax=ax,
         cut=0,
-        legend=False
+        legend=False,
+        bw_adjust=bw_adjustment # <-- Use the new parameter here
     )
     
     # 2. Iterate through each dataset to calculate and plot statistics
@@ -201,7 +209,7 @@ def plot_hi_crossing_kde(combined_df: pd.DataFrame, dataset_configs: dict, save_
     print(f"\nFinal KDE distribution plot saved to: {save_filename}")
 
 
-# --- Main Execution Block (UNCHANGED) ---
+# --- Main Execution Block (MODIFIED to use bw_adjustment) ---
 
 if __name__ == "__main__":
     
@@ -213,7 +221,7 @@ if __name__ == "__main__":
     # Define the final PDF output path
     HI_DISTRIBUTION_PLOT_OUTPUT = os.path.join(
         RESULTS_BASE_DIR, 
-        "hi_at_het_crossing_distribution_fixed_alignment.pdf"
+        "hi_at_het_crossing_distribution_extreme_linkage.png"
     )
 
     # Ensure the output directory exists
@@ -235,8 +243,10 @@ if __name__ == "__main__":
     print(f"\nSuccessfully combined data for {len(combined_df)} total replicate-generations.")
     
     # --- 3. RUN THE PLOTTING FUNCTION ---
+    # Set bw_adjustment to a value < 1.0 to reduce smoothness (0.5 is a good starting point)
     plot_hi_crossing_kde(
         combined_df=combined_df, 
         dataset_configs=DATASET_CONFIGS, 
-        save_filename=HI_DISTRIBUTION_PLOT_OUTPUT
+        save_filename=HI_DISTRIBUTION_PLOT_OUTPUT,
+        bw_adjustment=0.4 # Change this value to adjust the smoothness
     )

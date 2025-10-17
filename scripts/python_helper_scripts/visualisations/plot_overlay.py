@@ -276,7 +276,7 @@ if __name__ == "__main__":
     BATCH_CONFIGS = [
         {
             # This is the folder containing replicates 1 through 50
-            "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_extreme_linkage/",
+            "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_extreme_linkage_0.05/",
             "REPLICATE_IDS": list(range(1, 51)) # Replicates 1 through 50 (exclusive end)
         }
     ]
@@ -306,7 +306,7 @@ if __name__ == "__main__":
         "results", 
         # UPDATED FILENAME to reflect the full 1_100 range
         # Change the extension from .png to .pdf here:
-        f"overlay_{all_start_id}_{all_end_id}_extreme_linkage.png" 
+        f"overlay_{all_start_id}_{all_end_id}_extreme_linkage_0.05.png" 
     )
 
 

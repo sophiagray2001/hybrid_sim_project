@@ -126,11 +126,11 @@ def plot_crossing_time_distribution_multiple(
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     
-    # ?? UPDATED LEGEND LOCATION ??
+    # LEGEND LOCATION
     ax.legend(
         line_handles, 
         line_labels, 
-        loc='upper left',        # Anchor point (relative to the legend box)
+        loc='upper left',      # Anchor point (relative to the legend box)
         bbox_to_anchor=(1.05, 1) # Coordinates outside the plot area (top right)
     )
     
@@ -141,7 +141,7 @@ def plot_crossing_time_distribution_multiple(
 
 
 # ----------------------------------------------------------------------------------
-# --- MAIN EXECUTION BLOCK (Configuration remains the same) ---
+# --- MAIN EXECUTION BLOCK (Fixed the NameError) ---
 # ----------------------------------------------------------------------------------
 if __name__ == "__main__":
     
@@ -151,29 +151,32 @@ if __name__ == "__main__":
     # A. CONFIGS FOR THE PRIMARY, COMBINED UNLINKED DATASET
     UNLINKED_BATCH_CONFIGS = [
         {
-            "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_unlinked_closed/",
-            "FILENAME": "combined_matching_generations.csv",
+            "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_extreme_linkage_0.05/",
+            "FILENAME": "combined_matching_generations_extreme_linkage_0.05.csv",
         }
     ]
     
     # B. CONFIGS FOR ANY *OTHER* DATASETS TO BE PLOTTED SEPARATELY
-    SECONDARY_PLOTTING_CONFIGS = [
-        # Linked Loci (Secondary, Orange) - NOW FILTERED TO FIRST 50 REPLICATES
-        {
-             "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_linked_closed/", 
-             "FILENAME": "combined_matching_generations_linked_closed.csv",
-             "LABEL": "Linked Loci",
-             "COLOR": "#ff7f0e", # Distinct Orange
-             "REPLICATE_LIMIT": 50 # Limit this dataset to the first 50 unique replicates
-        },
-        # 20 Chromosomes (Tertiary, Red) 
-        {
-             "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_closed_20chr/", 
-             "FILENAME": "combined_matching_generations_closed_20chr.csv",
-             "LABEL": "20 Chromosomes",
-             "COLOR": "#d62728" # Distinct Red
-        }
-    ]
+    # Define this as an EMPTY list. This resolves the NameError and ensures the
+    # code that follows runs without error, but the list remains empty.
+    SECONDARY_PLOTTING_CONFIGS = [] 
+    
+    # You had these items commented out. If you wanted to run them again, 
+    # you would uncomment them and put them inside the list defined above.
+    # 
+    # {
+    #       "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_linked_closed/", 
+    #       "FILENAME": "combined_matching_generations_linked_closed.csv",
+    #       "LABEL": "Linked Loci",
+    #       "COLOR": "#ff7f0e", # Distinct Orange
+    #       "REPLICATE_LIMIT": 50 
+    # },
+    # {
+    #       "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_closed_20chr/", 
+    #       "FILENAME": "combined_matching_generations_closed_20chr.csv",
+    #       "LABEL": "20 Chromosomes",
+    #       "COLOR": "#d62728" # Distinct Red
+    # }
     
     # --- Setup Output Paths ---
     if not UNLINKED_BATCH_CONFIGS:
@@ -185,7 +188,7 @@ if __name__ == "__main__":
 
     COMBINED_PLOT_OUTPUT = os.path.join(
         RESULTS_BASE_DIR, 
-        "KDE_Ne_scaled_v8_legend_moved.pdf" # Updated filename to reflect legend move
+        "KDE_HET_drop_extreme_linkage.png" # Updated filename to reflect legend move
     )
     os.makedirs(os.path.dirname(COMBINED_PLOT_OUTPUT), exist_ok=True)
     
@@ -220,6 +223,7 @@ if __name__ == "__main__":
     })
     
     # Load and add any Secondary Datasets
+    # This loop will now execute safely over the empty list
     for config in SECONDARY_PLOTTING_CONFIGS:
         crossing_path = os.path.join(config["BASE_DIR"], config["FILENAME"])
         limit = config.get("REPLICATE_LIMIT") 
