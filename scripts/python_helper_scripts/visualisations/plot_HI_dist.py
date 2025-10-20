@@ -5,27 +5,38 @@ import seaborn as sns
 import numpy as np
 from scipy.stats import gaussian_kde
 
-# --- Configuration for all three datasets (UPDATED with Hex Codes) ---
-# The order in this dictionary determines the style applied (i=0, i=1, i=2)
+# --- Configuration for all three datasets (UPDATED with Hex Codes and bw_adjust) ---
+# The order in this dictionary determines the style applied (i=0, i=1, i=2, i=3)
 DATASET_CONFIGS = {
     "Tight Linkage": {
         "BASE_DIR": r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_extreme_linkage_0.05/",
         "REPLICATE_IDS": list(range(1, 51)),
         "CROSSING_FILENAME": "combined_matching_generations_extreme_linkage_0.05.csv",
-        "color": "#1f77b4" # Blue
-    }#,
-    #"Linked": {
-    #    "BASE_DIR": r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_linked_closed/",
-    #    "REPLICATE_IDS": list(range(1, 51)),
-    #    "CROSSING_FILENAME": "combined_matching_generations_linked_closed.csv",
-    #    "color": "#ff7f0e" # Orange
-    #},
-    #"20 Chromosomes": {
-    #    "BASE_DIR": r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_closed_20chr/",
-    #    "REPLICATE_IDS": list(range(1, 51)),
-    #    "CROSSING_FILENAME": "combined_matching_generations_closed_20chr.csv",
-    #    "color": "#d62728" # Red
-    #}
+        "color": "#1f77b4", # Blue
+        "bw_adjust": 0.5 # Less Smooth (More detail)
+    },
+    "Linked": {
+        "BASE_DIR": r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_linked_closed/",
+        "REPLICATE_IDS": list(range(1, 51)),
+        "CROSSING_FILENAME": "combined_matching_generations_linked_closed.csv",
+        "color": "#ff7f0e", # Orange
+        "bw_adjust": 0.9 # Moderately less smooth
+    },
+    "20 Chromosomes": {
+        "BASE_DIR": r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_closed_20chr/",
+        "REPLICATE_IDS": list(range(1, 51)),
+        "CROSSING_FILENAME": "combined_matching_generations_closed_20chr.csv",
+        "color": "#d62728", # Red
+        "bw_adjust": 0.9 # Moderately more smooth
+    },
+    # --- FOURTH DATASET ADDED HERE ---
+    "Unlinked": {
+        "BASE_DIR": r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_unlinked_closed/",
+        "REPLICATE_IDS": list(range(1, 51)),
+        "CROSSING_FILENAME": "combined_matching_generations.csv",
+        "color": "#2ca02c", # Green
+        "bw_adjust": 0.9 # Default smoothness (Most smooth)
+    }
 }
 
 # --- Function to Extract HI at the Crossing Point for a single dataset (UNCHANGED) ---
@@ -83,8 +94,8 @@ def extract_hi_at_crossing(config_name: str, config: dict) -> pd.DataFrame:
         except FileNotFoundError:
             continue
         except KeyError:
-             print(f"Error: Missing 'HI' or 'generation' column in {rep_data_path}. Skipping replicate.")
-             continue
+            print(f"Error: Missing 'HI' or 'generation' column in {rep_data_path}. Skipping replicate.")
+            continue
 
     return pd.DataFrame(hi_at_crossing_data)
 
@@ -94,66 +105,63 @@ def extract_hi_at_crossing(config_name: str, config: dict) -> pd.DataFrame:
 def plot_hi_crossing_kde(
     combined_df: pd.DataFrame, 
     dataset_configs: dict, 
-    save_filename: str,
-    bw_adjustment: float = 1.0 # NEW parameter for bandwidth (smoothness) adjustment
+    save_filename: str
+    # Removed global bw_adjustment parameter
 ):
     """
     Generates a combined KDE plot for all datasets, showing HI distribution
-    at the HET crossing point, using SOLID KDE lines and DISTINCT Mean/CI line styles.
-    
-    The bw_adjustment parameter controls KDE smoothness: < 1.0 is less smooth, > 1.0 is smoother.
+    at the HET crossing point, using SOLID KDE lines and DISTINCT Mean lines.
+    KDE smoothness is now controlled individually per dataset via DATASET_CONFIGS.
     """
-    print("\n--- Generating Custom Styled HI KDE Plot (Fixed Alignment) ---")
+    print("\n--- Generating Custom Styled HI KDE Plot (Individual BW Adjust) ---")
     
     # Set up the figure
-    fig, ax = plt.subplots(figsize=(12, 6))
+    fig, ax = plt.subplots(figsize=(10, 6))
     sns.set_style("whitegrid")
     
     line_handles = []
     line_labels = []
     dataset_names = list(dataset_configs.keys())
-
-    # 1. Plot the KDE Curves using Seaborn
-    palette = {name: config['color'] for name, config in dataset_configs.items()}
     
-    sns.kdeplot(
-        data=combined_df,
-        x='Mean_Hybrid_Index',
-        hue='Dataset',
-        palette=palette,
-        fill=False,      # No shading
-        linewidth=2.5,
-        ax=ax,
-        cut=0,
-        legend=False,
-        bw_adjust=bw_adjustment # <-- Use the new parameter here
-    )
-    
-    # 2. Iterate through each dataset to calculate and plot statistics
+    # 1. Iterate through each dataset to calculate statistics AND plot KDE
     for i, name in enumerate(dataset_names):
         config = dataset_configs[name]
-        subset = combined_df[combined_df['Dataset'] == name]['Mean_Hybrid_Index']
+        subset_df = combined_df[combined_df['Dataset'] == name].copy()
         
-        if subset.empty:
+        if subset_df.empty:
             continue
-
-        plot_color = config['color']
         
-        # --- Determine unique styles for the statistics lines ---
-        if i == 0: # First dataset (Unlinked)
+        subset = subset_df['Mean_Hybrid_Index']
+        plot_color = config['color']
+        bw_adjust_val = config['bw_adjust'] # <-- Retrieve the individual BW adjust
+
+        # --- Determine unique styles for the mean lines ---
+        if i == 0: # First dataset (Tight Linkage)
             mean_ls = '--'
-            ci_ls = ':'
         elif i == 1: # Second dataset (Linked)
             mean_ls = '-.'
-            ci_ls = (0, (1, 5)) # Sparse dot pattern
-        else: # i >= 2 (20 Chromosomes)
+        elif i == 2: # Third dataset (20 Chromosomes)
             mean_ls = (0, (3, 1, 1, 1)) # Dash-dot-dot pattern
-            ci_ls = (0, (1, 1)) # Very dense dot pattern
+        elif i == 3: # FOURTH DATASET (Unlinked)
+            mean_ls = (0, (5, 5)) # Long dash pattern
+        else: # For any additional datasets
+            mean_ls = '-'
 
-        # Calculate statistics
+        # 1a. Plot the KDE Curve for this subset using its individual bw_adjust
+        sns.kdeplot(
+            data=subset_df,
+            x='Mean_Hybrid_Index',
+            color=plot_color, # Plotting one by one, so use 'color' not 'hue'
+            fill=False,
+            linewidth=2.5,
+            ax=ax,
+            cut=0,
+            legend=False,
+            bw_adjust=bw_adjust_val # <-- Apply individual adjustment
+        )
+
+        # 1b. Calculate and plot Mean
         mean_hi = subset.mean()
-        ci_lower = subset.quantile(0.025)
-        ci_upper = subset.quantile(0.975)
         
         # Plot Mean Line (using distinct linestyle)
         ax.axvline(
@@ -163,30 +171,22 @@ def plot_hi_crossing_kde(
             linewidth=2, 
             zorder=3
         )
-        # Plot CI Lines (using distinct linestyle)
-        ax.axvline(ci_lower, color=plot_color, linestyle=ci_ls, linewidth=1.5, zorder=3)
-        ax.axvline(ci_upper, color=plot_color, linestyle=ci_ls, linewidth=1.5, zorder=3)
         
-        # --- Build Custom Legend Handles/Labels (FIXED ALIGNMENT) ---
-        # 1. KDE Curve Handle: Manually create a Line2D object with the correct color and solid style.
+        # --- Build Custom Legend Handles/Labels (Mean and KDE only) ---
+        # 1. KDE Curve Handle: 
         kde_handle = plt.Line2D([0], [0], color=plot_color, linestyle='-', linewidth=2.5)
         line_handles.append(kde_handle)
-        line_labels.append(f'{name} (KDE)')
+        line_labels.append(f'{name} (KDE, BW={bw_adjust_val})')
         
         # 2. Mean Handle (Using the specific linestyle)
         mean_handle = plt.Line2D([0], [0], color=plot_color, linestyle=mean_ls, linewidth=2)
         line_handles.append(mean_handle)
         line_labels.append(f'{name} Mean HI: {mean_hi:.3f}')
-        
-        # 3. CI Handle (Using the specific linestyle)
-        ci_handle = plt.Line2D([0], [0], color=plot_color, linestyle=ci_ls, linewidth=1.5)
-        line_handles.append(ci_handle)
-        line_labels.append(f'{name} 95% CI: ({ci_lower:.3f}-{ci_upper:.3f})')
 
-    # 3. Final Plot Cleanup and Legend
+
+    # 2. Final Plot Cleanup and Legend
     ax.set_xlabel("Mean Hybrid Index (HI) at Parental HET Intercept", fontsize=12)
     ax.set_ylabel("Probability Density", fontsize=12)
-    # Title removed per previous request
     ax.set_xlim(0, 1) # HI is always between 0 and 1
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
@@ -197,19 +197,18 @@ def plot_hi_crossing_kde(
         line_labels, 
         loc='upper left', 
         bbox_to_anchor=(1.01, 1.0),
-        #title="Dataset and Statistics",
         frameon=True,
         shadow=False,
         fontsize='small'
     )
     
-    plt.tight_layout(rect=[0, 0, 0.8, 1])
+    plt.tight_layout()
     plt.savefig(save_filename, bbox_inches='tight')
     plt.close()
     print(f"\nFinal KDE distribution plot saved to: {save_filename}")
 
 
-# --- Main Execution Block (MODIFIED to use bw_adjustment) ---
+# --- Main Execution Block (MODIFIED to remove bw_adjustment parameter) ---
 
 if __name__ == "__main__":
     
@@ -221,7 +220,7 @@ if __name__ == "__main__":
     # Define the final PDF output path
     HI_DISTRIBUTION_PLOT_OUTPUT = os.path.join(
         RESULTS_BASE_DIR, 
-        "hi_at_het_crossing_distribution_extreme_linkage.png"
+        "hi_admixture.pdf" # Updated filename
     )
 
     # Ensure the output directory exists
@@ -243,10 +242,9 @@ if __name__ == "__main__":
     print(f"\nSuccessfully combined data for {len(combined_df)} total replicate-generations.")
     
     # --- 3. RUN THE PLOTTING FUNCTION ---
-    # Set bw_adjustment to a value < 1.0 to reduce smoothness (0.5 is a good starting point)
+    # The bw_adjustment is now read from the DATASET_CONFIGS inside the function
     plot_hi_crossing_kde(
         combined_df=combined_df, 
         dataset_configs=DATASET_CONFIGS, 
-        save_filename=HI_DISTRIBUTION_PLOT_OUTPUT,
-        bw_adjustment=0.4 # Change this value to adjust the smoothness
+        save_filename=HI_DISTRIBUTION_PLOT_OUTPUT
     )
