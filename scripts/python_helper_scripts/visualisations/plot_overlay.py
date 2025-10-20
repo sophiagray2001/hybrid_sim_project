@@ -353,7 +353,7 @@ if __name__ == "__main__":
     BATCH_CONFIGS = [
         {
             # This is the folder containing replicates 1 through 50
-            "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_linked_closed/",
+            "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_no_recombination_50/",
             "REPLICATE_IDS": list(range(1, 51)) # Replicates 1 through 50 (exclusive end)
         }
     ]
@@ -370,14 +370,14 @@ if __name__ == "__main__":
     # CORRECTION: Do NOT join an absolute path with parent_dir. Use the path relative to parent_dir or correct the join.
     ANALYSIS_OUTPUT_FILE = os.path.join(
         parent_dir,
-        "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_linked_closed/combined_matching_generations_linked_closed.csv"
+        "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_no_recombination_50/combined_matching_generations_no_recombination.csv"
     )
     
     # Define the unique output plot file name
     OVERLAY_PLOT_OUTPUT = os.path.join(
         parent_dir,
         "results", 
-        f"tp_{all_start_id}_{all_end_id}_extreme_linkage_linked1chr_NEW.pdf" 
+        f"tp_{all_start_id}_{all_end_id}_norecomb_50_NEW.pdf" 
     )
 
     # Ensure the output directory exists

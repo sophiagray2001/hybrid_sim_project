@@ -12,7 +12,7 @@ DATASET_CONFIGS = {
         "BASE_DIR": r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_extreme_linkage_0.05/",
         "REPLICATE_IDS": list(range(1, 51)),
         "CROSSING_FILENAME": "combined_matching_generations_extreme_linkage_0.05.csv",
-        "color": "#1f77b4", # Blue
+        "color": "#9467bd", # Blue
         "bw_adjust": 0.5 # Less Smooth (More detail)
     },
     "Linked": {
@@ -36,7 +36,16 @@ DATASET_CONFIGS = {
         "CROSSING_FILENAME": "combined_matching_generations.csv",
         "color": "#2ca02c", # Green
         "bw_adjust": 0.9 # Default smoothness (Most smooth)
+    },
+    # --- Fifth DATASET ADDED HERE ---
+    "No Recombination": {
+        "BASE_DIR": r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_no_recombination_50/",
+        "REPLICATE_IDS": list(range(1, 51)),
+        "CROSSING_FILENAME": "combined_matching_generations_no_recombination.csv",
+        "color": "#ffd700", # yellow
+        "bw_adjust": 0.5 
     }
+    
 }
 
 # --- Function to Extract HI at the Crossing Point for a single dataset (UNCHANGED) ---
@@ -220,7 +229,7 @@ if __name__ == "__main__":
     # Define the final PDF output path
     HI_DISTRIBUTION_PLOT_OUTPUT = os.path.join(
         RESULTS_BASE_DIR, 
-        "hi_admixture.pdf" # Updated filename
+        "hi_admixture_norecomb.pdf" # Updated filename
     )
 
     # Ensure the output directory exists

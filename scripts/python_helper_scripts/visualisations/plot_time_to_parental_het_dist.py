@@ -159,7 +159,7 @@ if __name__ == "__main__":
             "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_linked_closed/",
             "FILENAME": "combined_matching_generations_linked_closed.csv",
             "LABEL": "Linked Loci",
-            "COLOR": "#2ca02c", # Green
+            "COLOR": "#ff7f0e",
             "REPLICATE_LIMIT": 50,
             "kde_smoothness_factor": 0.9 # Individual Smoothness Factor
         },
@@ -178,6 +178,15 @@ if __name__ == "__main__":
             "FILENAME": "combined_matching_generations_extreme_linkage_0.05.csv",
             "LABEL": "Extreme Linkage Loci",
             "COLOR": "#9467bd", # Purple
+            "REPLICATE_LIMIT": None,
+            "kde_smoothness_factor": 0.4 # Individual Smoothness Factor
+        },
+        {
+            # Dataset 4 (i=3): No recomb (slightly smoother than default)
+            "BASE_DIR": "/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_no_recombination_50/", 
+            "FILENAME": "combined_matching_generations_no_recombination.csv",
+            "LABEL": "No Recombination",
+            "COLOR": "#ffd700", # Yellow
             "REPLICATE_LIMIT": None,
             "kde_smoothness_factor": 0.4 # Individual Smoothness Factor
         }
@@ -231,8 +240,8 @@ if __name__ == "__main__":
     # Add the Combined Primary Data as the FIRST entry (i=0) - Keys are already correct (lowercase)
     plotting_data_list.append({
         'df': combined_unlinked_df,
-        'label': "Tight Linked Loci",
-        'color': "#1f77b4", # Blue
+        'label': "Unlinked Loci",
+        'color': "#2ca02c", 
         'kde_smoothness_factor': primary_kde_smoothness # Re-add the factor
     })
 
