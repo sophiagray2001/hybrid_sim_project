@@ -1,152 +1,259 @@
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+from scipy.stats import gaussian_kde
 
-# CHECK THIS FUNCTION DEFINITION AT THE TOP OF YOUR SCRIPT!
-def plot_hi_at_crossing_distribution(crossing_df: pd.DataFrame, rep_dir_map: dict, save_filename: str):
+# --- Configuration for all three datasets (UPDATED with Hex Codes and bw_adjust) ---
+# The order in this dictionary determines the style applied (i=0, i=1, i=2, i=3)
+DATASET_CONFIGS = {
+    "Tight Linkage": {
+        "BASE_DIR": r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_extreme_linkage_0.05/",
+        "REPLICATE_IDS": list(range(1, 51)),
+        "CROSSING_FILENAME": "combined_matching_generations_extreme_linkage_0.05.csv",
+        "color": "#9467bd", # Blue
+        "bw_adjust": 0.5 # Less Smooth (More detail)
+    },
+    "Linked": {
+        "BASE_DIR": r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_linked_closed/",
+        "REPLICATE_IDS": list(range(1, 51)),
+        "CROSSING_FILENAME": "combined_matching_generations_linked_closed.csv",
+        "color": "#ff7f0e", # Orange
+        "bw_adjust": 0.9 # Moderately less smooth
+    },
+    "20 Chromosomes": {
+        "BASE_DIR": r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_closed_20chr/",
+        "REPLICATE_IDS": list(range(1, 51)),
+        "CROSSING_FILENAME": "combined_matching_generations_closed_20chr.csv",
+        "color": "#d62728", # Red
+        "bw_adjust": 0.9 # Moderately more smooth
+    },
+    # --- FOURTH DATASET ADDED HERE ---
+    "Unlinked": {
+        "BASE_DIR": r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_unlinked_closed/",
+        "REPLICATE_IDS": list(range(1, 51)),
+        "CROSSING_FILENAME": "combined_matching_generations.csv",
+        "color": "#2ca02c", # Green
+        "bw_adjust": 0.9 # Default smoothness (Most smooth)
+    },
+    # --- Fifth DATASET ADDED HERE ---
+    "No Recombination": {
+        "BASE_DIR": r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_no_recombination_50/",
+        "REPLICATE_IDS": list(range(1, 51)),
+        "CROSSING_FILENAME": "combined_matching_generations_no_recombination.csv",
+        "color": "#ffd700", # yellow
+        "bw_adjust": 0.5 
+    }
+    
+}
+
+# --- Function to Extract HI at the Crossing Point for a single dataset (UNCHANGED) ---
+
+def extract_hi_at_crossing(config_name: str, config: dict) -> pd.DataFrame:
     """
-    Plots the distribution of Hybrid Indices (HI) at the moment each replicate's 
-    Heterozygosity (HET) dropped to the mean parental level.
-    Accepts the combined DataFrame directly as 'crossing_df'
-    and the base directory map as 'rep_dir_map'.
+    Loads the HET crossing file and extracts the Mean HI value from the full
+    replicate data file for the specific 'matching_hybrid_gen'.
+    Returns a DataFrame of ['Dataset', 'Mean_Hybrid_Index'] for plotting.
     """
+    base_dir = config["BASE_DIR"]
+    crossing_path = os.path.join(base_dir, config["CROSSING_FILENAME"])
+    rep_ids = config["REPLICATE_IDS"]
     
-    hi_at_crossing = []
+    hi_at_crossing_data = []
+
+    try:
+        crossing_df = pd.read_csv(crossing_path)
+    except (FileNotFoundError, pd.errors.EmptyDataError) as e:
+        print(f"Warning: Could not load crossing file for {config_name}: {e}. Skipping.")
+        return pd.DataFrame()
+
+    print(f"Processing {config_name} with {len(crossing_df)} replicates in crossing file.")
     
-    # 1. Use the combined DataFrame passed directly to the function
-    print(f"Loaded crossing data for {len(crossing_df)} total replicates.")
-    print("Extracting HI values at HET crossing points for each replicate...")
-    
-    # 2. Iterate through each row (replicate) of the combined crossing data
+    # Filter the crossing_df to only include the replicate IDs we are interested in
+    crossing_df = crossing_df[crossing_df['replicate_id'].isin(rep_ids)].reset_index(drop=True)
+
     for index, row in crossing_df.iterrows():
         rep_id = row['replicate_id']
         matching_gen = row['matching_hybrid_gen']
         
-        # Find the correct base directory using the map
-        base_dir = rep_dir_map.get(rep_id)  # <--- This is where 'base_dir' is defined
-        if not base_dir:
-            print(f"Warning: Replicate {rep_id} not found in the directory map. Skipping.")
-            continue
-            
         # Construct the path to this replicate's full data file
-        # The line below must use 'base_dir'
-        rep_data_path = os.path.join(base_dir, f'replicate_{rep_id}', 'results', f'results_rep_{rep_id}_individual_hi_het.csv')
+        rep_data_path = os.path.join(
+            base_dir, 
+            f'replicate_{rep_id}', 
+            'results', 
+            f'results_rep_{rep_id}_individual_hi_het.csv'
+        )
         
         try:
-            # Load the full HI/HET data for this replicate
             full_rep_df = pd.read_csv(rep_data_path)
             
-            # Calculate the mean HI for each generation in this replicate's data
+            # Calculate the mean HI for each generation
             mean_rep_hi = full_rep_df.groupby('generation')['HI'].mean()
             
             # Extract the specific HI value at the matching generation
             if matching_gen in mean_rep_hi.index:
                 hi_value = mean_rep_hi.loc[matching_gen]
-                hi_at_crossing.append(hi_value)
-            else:
-                print(f"Warning: Replicate {rep_id} - Matching generation '{matching_gen}' not found in data file.")
+                
+                hi_at_crossing_data.append({
+                    'Dataset': config_name,
+                    'Mean_Hybrid_Index': hi_value
+                })
 
         except FileNotFoundError:
-            print(f"Warning: Could not find full data file for Replicate {rep_id} at {rep_data_path}")
+            continue
+        except KeyError:
+            print(f"Error: Missing 'HI' or 'generation' column in {rep_data_path}. Skipping replicate.")
             continue
 
-    if not hi_at_crossing:
-        print("Error: No HI values could be extracted. Cannot create plot.")
-        return
+    return pd.DataFrame(hi_at_crossing_data)
 
-    # 3. Plot the Distribution (Histogram) of the collected HI values
+
+# --- Function to Plot the Distribution (KDE) with Distinct Statistics Lines (MODIFIED) ---
+
+def plot_hi_crossing_kde(
+    combined_df: pd.DataFrame, 
+    dataset_configs: dict, 
+    save_filename: str
+    # Removed global bw_adjustment parameter
+):
+    """
+    Generates a combined KDE plot for all datasets, showing HI distribution
+    at the HET crossing point, using SOLID KDE lines and DISTINCT Mean lines.
+    KDE smoothness is now controlled individually per dataset via DATASET_CONFIGS.
+    """
+    print("\n--- Generating Custom Styled HI KDE Plot (Individual BW Adjust) ---")
+    
+    # Set up the figure
     fig, ax = plt.subplots(figsize=(10, 6))
+    sns.set_style("whitegrid")
     
-    ax.hist(hi_at_crossing, bins=5, edgecolor='black', color='gray', alpha=0.7, rwidth=1.0)
+    line_handles = []
+    line_labels = []
+    dataset_names = list(dataset_configs.keys())
     
-    # Calculate and plot Mean, Median, and 95% CI
-    hi_series = pd.Series(hi_at_crossing)
-    mean_hi = hi_series.mean()
-    #median_hi = hi_series.median()
-    ci_lower = hi_series.quantile(0.025)
-    ci_upper = hi_series.quantile(0.975)
-    
-    ax.axvline(mean_hi, color='red', linestyle='--', linewidth=2, label=f'Mean HI: {mean_hi:.3f}')
-    #ax.axvline(median_hi, color='orange', linestyle='-', linewidth=2, label=f'Median HI: {median_hi:.3f}')
-    ax.axvline(ci_lower, color='blue', linestyle=':', linewidth=1.5, label=f'95% CI: ({ci_lower:.3f}-{ci_upper:.3f})')
-    ax.axvline(ci_upper, color='blue', linestyle=':', linewidth=1.5)
-    
-    # Set up labels and title
-    ax.set_xlabel("Mean Hybrid Index (HI) at Parental HET Intercept", fontsize=10)
-    ax.set_ylabel("Number of Replicates", fontsize=10)
-    #ax.set_title("Distribution of Hybrid Index when HET Reaches Parental Level", fontsize=14)
+    # 1. Iterate through each dataset to calculate statistics AND plot KDE
+    for i, name in enumerate(dataset_names):
+        config = dataset_configs[name]
+        subset_df = combined_df[combined_df['Dataset'] == name].copy()
+        
+        if subset_df.empty:
+            continue
+        
+        subset = subset_df['Mean_Hybrid_Index']
+        plot_color = config['color']
+        bw_adjust_val = config['bw_adjust'] # <-- Retrieve the individual BW adjust
+
+        # --- Determine unique styles for the mean lines ---
+        if i == 0: # First dataset (Tight Linkage)
+            mean_ls = '--'
+        elif i == 1: # Second dataset (Linked)
+            mean_ls = '-.'
+        elif i == 2: # Third dataset (20 Chromosomes)
+            mean_ls = (0, (3, 1, 1, 1)) # Dash-dot-dot pattern
+        elif i == 3: # FOURTH DATASET (Unlinked)
+            mean_ls = (0, (5, 5)) # Long dash pattern
+        else: # For any additional datasets
+            mean_ls = '-'
+
+        # 1a. Plot the KDE Curve for this subset using its individual bw_adjust
+        sns.kdeplot(
+            data=subset_df,
+            x='Mean_Hybrid_Index',
+            color=plot_color, # Plotting one by one, so use 'color' not 'hue'
+            fill=False,
+            linewidth=2.5,
+            ax=ax,
+            cut=0,
+            legend=False,
+            bw_adjust=bw_adjust_val # <-- Apply individual adjustment
+        )
+
+        # 1b. Calculate and plot Mean
+        mean_hi = subset.mean()
+        
+        # Plot Mean Line (using distinct linestyle)
+        ax.axvline(
+            mean_hi, 
+            color=plot_color, 
+            linestyle=mean_ls, 
+            linewidth=2, 
+            zorder=3
+        )
+        
+        # --- Build Custom Legend Handles/Labels (Mean and KDE only) ---
+        # 1. KDE Curve Handle: 
+        kde_handle = plt.Line2D([0], [0], color=plot_color, linestyle='-', linewidth=2.5)
+        line_handles.append(kde_handle)
+        line_labels.append(f'{name} (KDE, BW={bw_adjust_val})')
+        
+        # 2. Mean Handle (Using the specific linestyle)
+        mean_handle = plt.Line2D([0], [0], color=plot_color, linestyle=mean_ls, linewidth=2)
+        line_handles.append(mean_handle)
+        line_labels.append(f'{name} Mean HI: {mean_hi:.3f}')
+
+
+    # 2. Final Plot Cleanup and Legend
+    ax.set_xlabel("Mean Hybrid Index (HI) at Parental HET Intercept", fontsize=12)
+    ax.set_ylabel("Probability Density", fontsize=12)
     ax.set_xlim(0, 1) # HI is always between 0 and 1
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
-    ax.legend(loc='upper right')
+
+    # Use the custom handles and labels for the legend
+    ax.legend(
+        line_handles, 
+        line_labels, 
+        loc='upper left', 
+        bbox_to_anchor=(1.01, 1.0),
+        frameon=True,
+        shadow=False,
+        fontsize='small'
+    )
     
+    plt.tight_layout()
     plt.savefig(save_filename, bbox_inches='tight')
     plt.close()
-    print(f"\nHI distribution plot saved to: {save_filename}")
+    print(f"\nFinal KDE distribution plot saved to: {save_filename}")
 
+
+# --- Main Execution Block (MODIFIED to remove bw_adjustment parameter) ---
 
 if __name__ == "__main__":
-    # --- 1. DEFINE FILE PATHS (FIXED PATH 1) ---
     
-    # Base path for Replicates 1-50
-    BASE_DIR_1 = r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs/"
-    REPLICATE_IDS_1 = list(range(1, 51)) 
-    
-    # CORRECTED LOGIC: The 'results' folder is a sibling of 'simulation_outputs' 
-    # within the 'input_data' directory.
-    INPUT_DATA_BASE = os.path.dirname(BASE_DIR_1) 
+    # --- 1. SET UP OUTPUT PATH ---
+    first_base_dir = list(DATASET_CONFIGS.values())[0]["BASE_DIR"].rstrip(os.sep)
+    INPUT_DATA_BASE = os.path.dirname(first_base_dir)
     RESULTS_BASE_DIR = os.path.join(INPUT_DATA_BASE, "results")
     
-    CROSSING_PATH_1 = os.path.join(
-        BASE_DIR_1, 
-        "combined_matching_generations.csv" 
-    )
-    
-    # Base path for Replicates 51-100 (No Change Needed Here)
-    BASE_DIR_2 = r"/mnt/nfs2/bioenv/sg802/hybrid_sim_project/simulation_outputs_second_batch/"
-    REPLICATE_IDS_2 = list(range(51, 101))
-    
-    # Determine the crossing file path for Batch 2 (using your specific file name)
-    CROSSING_PATH_2 = os.path.join(
-        BASE_DIR_2, 
-        "combined_matching_generations_second_batch.csv" 
-    )
-    
-    # --- 2. LOAD AND CONCATENATE THE CROSSING DATA ---
-    print("Loading and combining crossing data from both directories...")
-    try:
-        df1 = pd.read_csv(CROSSING_PATH_1)
-        df2 = pd.read_csv(CROSSING_PATH_2)
-        combined_crossing_df = pd.concat([df1, df2], ignore_index=True)
-    except FileNotFoundError as e:
-        print(f"Error: One of the crossing files was not found. Please check paths:")
-        print(f"Path 1: {CROSSING_PATH_1}")
-        print(f"Path 2: {CROSSING_PATH_2}")
-        print(f"Original Error: {e}")
-        exit(1)
-    
-    # --- 3. CREATE REPLICATE-TO-DIRECTORY MAP ---
-    # This map is used by the plotting function to find the individual rep_X_hi_het files
-    rep_dir_map = {}
-    for rep_id in REPLICATE_IDS_1:
-        rep_dir_map[rep_id] = BASE_DIR_1
-    for rep_id in REPLICATE_IDS_2:
-        rep_dir_map[rep_id] = BASE_DIR_2
-    
-    # Define the output path for the final plot (using the centralized results folder)
+    # Define the final PDF output path
     HI_DISTRIBUTION_PLOT_OUTPUT = os.path.join(
         RESULTS_BASE_DIR, 
-        "hi_at_het_crossing_distribution.png" 
+        "hi_admixture_norecomb.pdf" # Updated filename
     )
 
     # Ensure the output directory exists
     os.makedirs(os.path.dirname(HI_DISTRIBUTION_PLOT_OUTPUT), exist_ok=True)
     
-    # --- 4. RUN THE PLOTTING FUNCTION ---
-    # The function signature (plot_hi_at_crossing_distribution) must be the 
-    # one provided in the previous turn to accept the DataFrame and the map.
-    plot_hi_at_crossing_distribution(
-        crossing_df=combined_crossing_df, 
-        rep_dir_map=rep_dir_map,         
+    # --- 2. LOAD AND COMBINE DATA FROM ALL DATASETS ---
+    full_data_list = []
+    
+    for name, config in DATASET_CONFIGS.items():
+        processed_df = extract_hi_at_crossing(name, config)
+        if not processed_df.empty:
+            full_data_list.append(processed_df)
+
+    if not full_data_list:
+        print("\nFATAL: No HI data could be extracted for any dataset. Aborting.")
+        exit(1)
+    
+    combined_df = pd.concat(full_data_list, ignore_index=True)
+    print(f"\nSuccessfully combined data for {len(combined_df)} total replicate-generations.")
+    
+    # --- 3. RUN THE PLOTTING FUNCTION ---
+    # The bw_adjustment is now read from the DATASET_CONFIGS inside the function
+    plot_hi_crossing_kde(
+        combined_df=combined_df, 
+        dataset_configs=DATASET_CONFIGS, 
         save_filename=HI_DISTRIBUTION_PLOT_OUTPUT
     )
