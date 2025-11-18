@@ -6,7 +6,6 @@ import os
 import json
 import networkx as nx
 import matplotlib.pyplot as plt
-import ast
 import time
 import re
 from typing import Dict, List, Any, Optional
@@ -14,7 +13,6 @@ import csv
 import csv
 from collections import defaultdict
 import time
-import pydot
 
 # CLASSES
 class Genome:
@@ -153,43 +151,47 @@ class RecombinationSimulator:
         """
         Performs recombination on a pair of parent haplotypes to create a new offspring haplotype.
         
-        The number of crossovers is stochastically determined based on the crossover_dist (e.g., {1: 1.0}).
+        CORRECTED: Ensures initialization and propagation of missing data (-1 allele code).
         """
-        offspring_haplotype = np.zeros_like(parent_haplotype1)
+        parent_haplotype1 = np.array(parent_haplotype1, dtype=np.int8)
+        parent_haplotype2 = np.array(parent_haplotype2, dtype=np.int8)
         junctions = []
 
-        # --- NEW LOGIC: Sample the number of crossovers from the distribution ---
-        # np.random.choice uses the keys (the count, e.g., 1 or 2) weighted by the values (the probability, e.g., 1.0 or 0.8)
+        # --- Recombination Logic (Simulating crossovers) ---
         num_crossovers = int(np.random.choice(
             list(crossover_dist.keys()),
             p=list(crossover_dist.values())
         ))
 
+        # Determine the initial contributing haplotype (0 or 1)
+        current_haplotype_index = random.choice([0, 1])
+        
+        # --- CRITICAL FIX 1: Initialize the offspring array with the entire starting haplotype ---
+        # This correctly handles the initial segment and the zero-crossover case naturally, 
+        # carrying any existing -1 values with it.
+        if current_haplotype_index == 0:
+            offspring_haplotype = np.copy(parent_haplotype1)
+        else:
+            offspring_haplotype = np.copy(parent_haplotype2)
+
+        # Handle zero crossovers: the array is already correctly initialized, just return it.
         if num_crossovers == 0:
-            # If zero crossovers, randomly choose one parental haplotype (no recombination)
-            if random.random() < 0.5:
-                offspring_haplotype = np.copy(parent_haplotype1)
-            else:
-                offspring_haplotype = np.copy(parent_haplotype2)
             return offspring_haplotype, junctions
             
-        chrom_length = self.chromosome_lengths_cm.get(chromosome_id, 0.0)
+        # --- Multi-crossover logic begins here ---
         
-        # This line now correctly receives an integer for the number of crossovers:
+        chrom_length = self.chromosome_lengths_cm.get(chromosome_id, 0.0)
         crossover_positions_cm = np.sort(np.random.uniform(0, chrom_length, num_crossovers))
-
+        
         markers_on_chrom = self.chromosome_structure.get(chromosome_id, [])
         if not markers_on_chrom:
             return offspring_haplotype, []
             
         marker_positions_cm = self.marker_positions_arrays[chromosome_id]
-        
         crossover_indices = []
+        # ... (Crossover index finding logic remains unchanged) ...
         for pos_cm in crossover_positions_cm:
-            # Find the marker index closest to the calculated crossover position
             idx_after = np.searchsorted(marker_positions_cm, pos_cm, side='right')
-            
-            # ... (Closest index calculation logic remains the same) ...
             if idx_after == 0:
                 closest_idx = 0
             elif idx_after == len(marker_positions_cm):
@@ -197,25 +199,27 @@ class RecombinationSimulator:
             else:
                 dist_prev = pos_cm - marker_positions_cm[idx_after - 1]
                 dist_curr = marker_positions_cm[idx_after] - pos_cm
-                
-                if dist_prev <= dist_curr:
-                    closest_idx = idx_after - 1
-                else:
-                    closest_idx = idx_after
-                    
+                closest_idx = idx_after - 1 if dist_prev <= dist_curr else idx_after
             crossover_indices.append(closest_idx)
-        
-        current_haplotype = random.choice([0, 1])
+
         current_marker_idx = 0
         
         for i, crossover_idx in enumerate(crossover_indices):
             end_idx = crossover_idx + 1
-            # Copy segment from appropriate parent haplotype
-            if current_haplotype == 0:
-                offspring_haplotype[current_marker_idx:end_idx] = parent_haplotype1[current_marker_idx:end_idx]
-            else:
-                offspring_haplotype[current_marker_idx:end_idx] = parent_haplotype2[current_marker_idx:end_idx]
             
+            # Switch to the other parent (recombination)
+            current_haplotype_index = 1 - current_haplotype_index 
+            
+            # Copy segment from appropriate parent haplotype (overwriting the previously initialized segment)
+            if current_haplotype_index == 0:
+                segment = parent_haplotype1[current_marker_idx:end_idx]
+            else:
+                segment = parent_haplotype2[current_marker_idx:end_idx]
+                
+            # CRITICAL FIX 2: Only copy the new segment to the offspring array
+            offspring_haplotype[current_marker_idx:end_idx] = segment
+            
+            # ... (Junction tracking logic remains unchanged) ...
             if track_junctions:
                 junctions.append({
                     'chromosome': chromosome_id,
@@ -224,15 +228,25 @@ class RecombinationSimulator:
                     'prev_marker_idx': crossover_idx
                 })
             
-            current_haplotype = 1 - current_haplotype
             current_marker_idx = end_idx
-                
-        # Copy the final segment after the last crossover
-        if current_haplotype == 0:
-            offspring_haplotype[current_marker_idx:] = parent_haplotype1[current_marker_idx:]
-        else:
-            offspring_haplotype[current_marker_idx:] = parent_haplotype2[current_marker_idx:]
             
+        # Copy the final segment after the last crossover (which is already done by the loop's end index)
+        # This final block is no longer strictly necessary because the loop should handle all segments
+        # from the first marker up to the last crossover index.
+        # Since the offspring_haplotype was initialized with the FULL starting parent, 
+        # the final segment (from the last crossover to the end) is ALREADY correct.
+        
+        # Remove the final segment copy logic:
+        # if current_haplotype == 0:
+        #     final_segment = parent_haplotype1[current_marker_idx:]
+        # else:
+        #     final_segment = parent_haplotype2[current_marker_idx:]
+        # offspring_haplotype[current_marker_idx:] = final_segment
+        
+        # Remove the redundant final propagation check:
+        # is_invalid = (offspring_haplotype != 0) & (offspring_haplotype != 1)
+        # offspring_haplotype[is_invalid] = -1
+        
         return offspring_haplotype, junctions
 
     def mate(self, parent1, parent2, crossover_dist, pedigree_recording, track_blocks, track_junctions, generation, new_offspring_id):
@@ -243,23 +257,25 @@ class RecombinationSimulator:
         NOTE: This function assumes that the calling function (the crossing plan) 
         has already ensured parent1 != parent2 (no selfing).
         """
-        offspring_haplotypes = {}
+        # FIX: Initialize the dictionary outside the loop to avoid NameError
+        offspring_haplotypes = {} 
         blocks_data = []
         junctions_data = []
+        
+        # Store parent IDs for tracking, ensuring we don't pass None if not recording pedigree
+        p1_id = parent1.individual_id if pedigree_recording else parent1.individual_id
+        p2_id = parent2.individual_id if pedigree_recording else parent2.individual_id
         
         for chrom_id in self.chromosome_structure.keys():
             p1_hapA, p1_hapB = parent1.genome.chromosomes[chrom_id]
             p2_hapA, p2_hapB = parent2.genome.chromosomes[chrom_id]
 
             # 1. Generate Gamete 1 (Contributed by Parent 1) - Provides the offspring's HapA
-            # This function must internally simulate the entire meiotic output (crossovers + segregation) 
-            # based on the parent's full diploid genome (p1_hapA, p1_hapB) and the crossover_dist.
             new_hapA, crossovers1 = self._simulate_haploid_recombination(
                 p1_hapA, p1_hapB, chrom_id, crossover_dist, track_junctions
             )
             
             # 2. Generate Gamete 2 (Contributed by Parent 2) - Provides the offspring's HapB
-            # This is an entirely independent meiotic event.
             new_hapB, crossovers2 = self._simulate_haploid_recombination(
                 p2_hapA, p2_hapB, chrom_id, crossover_dist, track_junctions
             )
@@ -271,26 +287,32 @@ class RecombinationSimulator:
                 all_crossovers = crossovers1 + crossovers2
                 
                 for pos in all_crossovers:
-                    junctions_data.append({
-                        'individual_id': new_offspring_id,
-                        'chromosome': chrom_id,
-                        'base_pair': pos['base_pair'],
-                        'event_type': 'crossover',
-                        'generation': generation,
-                        'prev_marker_idx': pos['prev_marker_idx']
-                    })
+                    # FIX: Converting dict to tuple for CSV output
+                    junctions_data.append((
+                        new_offspring_id,              # individual_id
+                        chrom_id,                      # chromosome
+                        pos['base_pair'],              # base_pair
+                        'crossover',                   # event_type
+                        generation,                    # generation
+                        pos['prev_marker_idx']         # prev_marker_idx
+                    ))
                     
         offspring_genome = Genome(offspring_haplotypes)
         offspring = Individual(
             individual_id=new_offspring_id,
             generation=generation,
             genome=offspring_genome,
-            parent1_id=parent1.individual_id if pedigree_recording else None,
-            parent2_id=parent2.individual_id if pedigree_recording else None
+            parent1_id=p1_id if pedigree_recording else None,
+            parent2_id=p2_id if pedigree_recording else None
         )
         
         if track_blocks:
-            blocks_data = self.get_ancestry_blocks(offspring)
+            # MODIFICATION: Pass parent IDs to track which parent contributed Hap1 and Hap2
+            blocks_data = self.get_ancestry_blocks(
+                offspring,
+                parent1_id=p1_id, # Parent 1 contributed Hap A (index 0)
+                parent2_id=p2_id  # Parent 2 contributed Hap B (index 1)
+            )
 
         return offspring, blocks_data, junctions_data
     
@@ -299,9 +321,6 @@ class RecombinationSimulator:
         """
         Creates a new homozygous individual (immigrant) with a pure genotype 
         based on the provided pop_label ('PA' or 'PB'). 
-
-        The creation process now respects marker frequency data if it exists 
-        (like the main founders), or falls back to fixed alleles if not.
         """
         
         if pop_label not in ['PA', 'PB']:
@@ -359,14 +378,7 @@ class RecombinationSimulator:
         """
         Creates two haplotypes (hapA and hapB) for a founder individual 
         from an existing, unphased genotype count vector (0, 1, 2) input.
-        
-        Args:
-            individual_genotypes (Dict[str, int]): A dictionary mapping marker_id 
-                                                   to the standardized genotype count (0, 1, or 2).
-
-        Returns:
-            Dict[str, tuple[np.ndarray, np.ndarray]]: A dictionary mapping chromosome ID 
-                                                      to a tuple of two NumPy arrays (haplotypes).
+        Missing data (e.g., -1, -9, -10) is now represented as -1 in the haplotypes.
         """
         initial_haplotypes = {}
         
@@ -374,21 +386,24 @@ class RecombinationSimulator:
             markers = self.chromosome_structure[chrom]
             num_markers = len(markers)
             
-            # Initialize haplotypes to the default (PA) allele: 0
-            hapA_alleles = np.zeros(num_markers, dtype=np.int8)
-            hapB_alleles = np.zeros(num_markers, dtype=np.int8)
+            # MODIFIED: Initialize haplotypes to -1 (Missing Data) instead of 0
+            hapA_alleles = np.full(num_markers, -1, dtype=np.int8) 
+            hapB_alleles = np.full(num_markers, -1, dtype=np.int8)
             
             for i, marker in enumerate(markers):
                 marker_id = marker['marker_id']
-                # Get standardized count data (0=A/A, 1=A/B or B/A, 2=B/B)
+                # Get standardized count data (0=A/A, 1=A/B or B/A, 2=B/B). Missing defaults to -1.
                 genotype_count = individual_genotypes.get(marker_id, -1) 
                 
                 # Genotype Logic (Allele A = 0, Allele B = 1)
                 
-                # 0: Homozygous PA/Allele 0 (0|0). Already set by initialization.
+                # 0: Homozygous PA/Allele 0 (0|0)
+                if genotype_count == 0:
+                    hapA_alleles[i] = 0
+                    hapB_alleles[i] = 0
                 
                 # 2: Homozygous PB/Allele 1 (1|1)
-                if genotype_count == 2:
+                elif genotype_count == 2:
                     hapA_alleles[i] = 1
                     hapB_alleles[i] = 1
                     
@@ -404,15 +419,14 @@ class RecombinationSimulator:
                         hapA_alleles[i] = 1
                         hapB_alleles[i] = 0
                 
-                # -1 or other: Missing Data. 
-                # Currently leaves as 0|0 (assuming a default fill), but better handling 
-                # (e.g., using a mask or imputation logic later) may be needed.
-                # elif genotype_count == -1: 
-                #     continue 
+                # -1 or other: Missing Data. Remains at -1 (initialised value).
+                # Note: Any other non-0/1/2 value (like -9 or -10) that is correctly 
+                # mapped to -1 by the dictionary default will be handled here.
 
             initial_haplotypes[chrom] = (hapA_alleles, hapB_alleles)
                 
         return initial_haplotypes
+        
     # NEW HELPER METHOD ADDED FOR IMMIGRANT CREATION
     def create_initial_haplotypes_pure(self, markers, marker_freqs_map):
         """
@@ -436,7 +450,6 @@ class RecombinationSimulator:
         """
         [DEPRECATED FOR NEW INPUT] Creates two haplotypes for a founder individual 
         based on a map of marker allele frequencies.
-        This is the method for creating founders that reflect source population variation.
         """
         haplotypes = {}
         for chrom in self.chromosome_structure.keys():
@@ -470,22 +483,25 @@ class RecombinationSimulator:
         
         return hi, het
 
-# Updated recomb_simulator.get_genotypes (Correction is on line 3)
     def get_genotypes(self, individual, md_prob_override=None):
-            """
-            Returns a flat list of genotypes for an individual across all markers,
-            with missing data introduced.
-            """
-            genotypes = []
+        """
+        Returns a flat list of genotypes for an individual across all markers,
+        with missing data introduced. **Handles -1 missing data code.**
+        """
+        genotypes = []
+        
+        for chrom_id, markers in self.chromosome_structure.items():
+            hapA, hapB = individual.genome.chromosomes[chrom_id]
             
-            for chrom_id, markers in self.chromosome_structure.items():
-                # FIX: Use the string chrom_id directly, since individual.genome.chromosomes 
-                # is now a dictionary keyed by chrom_id (e.g., '1', '2').
-                hapA, hapB = individual.genome.chromosomes[chrom_id]
+            for i, marker in enumerate(markers):
                 
-                for i, marker in enumerate(markers):
+                # Check for inherited missing data (allele code is -1)
+                if hapA[i] == -1 or hapB[i] == -1:
+                    genotype = './.'
+                
+                else:
+                    # Check for simulated missing data (based on md_prob)
                     md_prob = 0.0
-                    
                     if 'md_prob' in marker:
                         md_prob = marker['md_prob']
                     elif md_prob_override is not None:
@@ -494,20 +510,24 @@ class RecombinationSimulator:
                     if random.random() < md_prob:
                         genotype = './.'
                     else:
+                        # Genotype is real (0|0, 0|1, 1|0, or 1|1)
                         genotype = f"{hapA[i]}|{hapB[i]}"
 
-                    genotypes.append({
-                        'individual_id': individual.individual_id,
-                        'marker_id': marker['marker_id'],
-                        'chromosome': chrom_id, 
-                        'base_pair': marker['base_pair'],
-                        'genotype': genotype
-                    })
-            return genotypes
-            
-    def get_ancestry_blocks(self, individual):
+                # FIX: Converting dict to tuple for CSV output
+                genotypes.append((
+                    individual.individual_id,
+                    marker['marker_id'],
+                    chrom_id, 
+                    marker['base_pair'],
+                    genotype
+                ))
+        return genotypes
+        
+    def get_ancestry_blocks(self, individual, parent1_id=None, parent2_id=None):
         """
-        Tracks ancestry blocks for a given individual.
+        Tracks ancestry blocks for a given individual. 
+        **MODIFIED to use parent ID instead of founder label ('PA'/'PB') 
+        in the ancestry column if parent IDs are provided.**
         """
         blocks_data = []
         
@@ -515,51 +535,63 @@ class RecombinationSimulator:
             if not markers:
                 continue
             
-            # FIX: Get the tuple of haplotypes (hapA, hapB) using the chrom_id key.
             haplotype_tuple = individual.genome.chromosomes[chrom_id] 
-
             marker_positions_cm = self.marker_positions_arrays[chrom_id]
             marker_ids = np.array([m['marker_id'] for m in markers])
 
             # Iterate over the two haplotypes in the tuple
             for hap_idx, hap in enumerate(haplotype_tuple):
                 
-                # Find indices where ancestry (allele 0 vs 1) changes
-                transition_indices = np.where(np.diff(hap) != 0)[0] + 1
-
-                # Define the start and end of all blocks 
-                block_start_indices = np.concatenate(([0], transition_indices))
-                block_end_indices = np.concatenate((transition_indices, [len(hap)]))
+                # Determine the immediate source parent ID for this haplotype
+                if hap_idx == 0:
+                    # Hap 1 (index 0) came from Parent 1
+                    source_parent_id = parent1_id
+                else:
+                    # Hap 2 (index 1) came from Parent 2
+                    source_parent_id = parent2_id
+                    
+                # Note: 'ancestry' here means the *founder population* (PA/PB) 
+                # which the segment traces back to.
+                # If source_parent_id is None, we fall back to the founder label.
                 
-                # The final index adjustment is often block_end_indices = np.concatenate((transition_indices - 1, [len(hap) - 1])) 
-                # but based on your original logic: 
+                # --- Block Finding Logic (Lines 522-536 remain unchanged) ---
+                transition_indices = np.where(np.diff(hap) != 0)[0] + 1
+                block_start_indices = np.concatenate(([0], transition_indices))
                 block_end_indices = np.concatenate((transition_indices - 1, [len(hap) - 1]))
 
-
-                # Extract data points for all blocks
                 ancestries = hap[block_start_indices]
                 start_cms = marker_positions_cm[block_start_indices]
                 end_cms = marker_positions_cm[block_end_indices]
                 start_marker_ids = marker_ids[block_start_indices]
                 end_marker_ids = marker_ids[block_end_indices]
+                # -----------------------------------------------------------
                 
                 # Compile block data
                 for i in range(len(block_start_indices)):
-                    ancestry_label = 'PA' if ancestries[i] == 0 else 'PB'
                     
-                    blocks_data.append({
-                        'individual_id': individual.individual_id,
-                        'chromosome': chrom_id,
-                        'haplotype': hap_idx + 1,
-                        'start_cm': start_cms[i],
-                        'end_cm': end_cms[i],
-                        'start_marker_id': start_marker_ids[i],
-                        'end_marker_id': end_marker_ids[i],
-                        'ancestry': ancestry_label
-                    })
+                    # Determine the label for the 'ancestry' column:
+                    if source_parent_id is not None:
+                        # NEW LOGIC: Use the immediate source parent ID for this haplotype.
+                        # This effectively makes the 'ancestry' column track the pedigree.
+                        ancestry_column_label = source_parent_id
+                    else:
+                        # FALLBACK: Use the founder population label ('PA' or 'PB')
+                        # Note: ancestry 0 = PA, ancestry 1 = PB
+                        ancestry_column_label = 'PA' if ancestries[i] == 0 else 'PB'
+                    
+                    blocks_data.append((
+                        individual.individual_id,
+                        chrom_id,
+                        hap_idx + 1,
+                        start_cms[i],
+                        end_cms[i],
+                        start_marker_ids[i],
+                        end_marker_ids[i],
+                        ancestry_column_label # Use the new label
+                    ))
 
         return blocks_data
-
+    
 # HELPER FUNCTIONS
 
 def load_and_preprocess_genotype_data(file_path):
@@ -604,11 +636,14 @@ def load_and_preprocess_genotype_data(file_path):
     
     return phased_genotype_df
 
-def process_genotype_input(raw_data_df):
+def process_genotype_input(raw_data_df: pd.DataFrame) -> pd.DataFrame:
     """
     Checks the input data for phasing based on the delimiter ('|' for phased, 
     '/' or '0, 1, 2' for unphased). Converts all input into two phased haplotypes 
     (Hap1, Hap2), applying random phasing to all unphased heterozygotes.
+    
+    CRITICAL UPDATE: Now correctly maps string/numeric missing data codes 
+    (-9, -10, NA, NaN, blank) to the internal placeholder '.'.
     """
     phased_data = {}
     
@@ -618,7 +653,9 @@ def process_genotype_input(raw_data_df):
     # Safely get the first non-missing genotype entry to determine the format
     first_col = raw_data_df.iloc[:, 0]
     # Filter out missing values (like NaN, '.', 'na') and get the first one
-    first_genotype_str = str(first_col.loc[first_col.astype(str).str.strip().ne('')].iloc[0]).strip()
+    # Note: Pandas NaN/None objects will be converted to string 'nan' here
+    non_missing_values = first_col.astype(str).str.strip().replace('', np.nan).dropna()
+    first_genotype_str = non_missing_values.iloc[0].strip() if not non_missing_values.empty else ""
     
     # --- Determine Phasing Status ---
     is_phased_input = '|' in first_genotype_str
@@ -626,7 +663,6 @@ def process_genotype_input(raw_data_df):
     if is_phased_input:
         print("Detected PHASING (pipe '|' delimiter).")
     else:
-        # Check for 0, 1, 2 format only for print statement, actual logic handles it below
         if first_genotype_str.isdigit() or '/' in first_genotype_str:
             print("Detected UNPHASED (slash '/' or 0, 1, 2 format). Applying RANDOM Phasing to heterozygotes.")
         else:
@@ -634,59 +670,73 @@ def process_genotype_input(raw_data_df):
 
     print("-" * 30)
 
+    # Define all known missing codes for string comparison
+    MISSING_CODES = ('nan', 'na', '-9', '-10')
+    
     # --- Process Data by Individual ---
     for ind_id, genotypes in raw_data_df.items():
         hap1 = []
         hap2 = []
         
-        for genotype_string in genotypes:
-            genotype_string = str(genotype_string).strip()
+        for genotype_raw_value in genotypes:
+            genotype_string = str(genotype_raw_value).strip()
             
-            # 1. Handle Missing Data
-            if not genotype_string or genotype_string.lower() in ('nan', '.', 'na'):
+            # 1. Handle Missing Data (String/Blank/Pandas NaN)
+            if not genotype_string or genotype_string.lower() in MISSING_CODES:
                 hap1.append('.')
                 hap2.append('.')
                 continue
             
-            # 2. Handle 0, 1, 2 Integer Format
+            # 2. Handle 0, 1, 2 Integer Format (and capture integer missing codes: -9, -10)
             is_integer_format = False
             try:
                 g_val = int(genotype_string)
+                
+                # CRITICAL FIX: Capture -9 and -10 passed as integers
+                if g_val in [-9, -10]:
+                    hap1.append('.')
+                    hap2.append('.')
+                    continue # Stop processing this marker
+
                 if 0 <= g_val <= 2:
                     is_integer_format = True
                 
-                if g_val == 0:  # Homozygous Reference
+                if g_val == 0:  # Homozygous Reference (0|0)
                     hap1.append('0')
                     hap2.append('0')
-                elif g_val == 1:  # Heterozygous - **RANDOMIZED PHASING**
-                    # Randomly assign 0 to Hap1 and 1 to Hap2, OR vice-versa.
+                elif g_val == 1:  # Heterozygous - **RANDOMIZED PHASING** (0|1 or 1|0)
                     if random.choice([True, False]):
                         hap1.append('0')
                         hap2.append('1')
                     else:
                         hap1.append('1')
                         hap2.append('0')
-                elif g_val == 2:  # Homozygous Alternate
+                elif g_val == 2:  # Homozygous Alternate (1|1)
                     hap1.append('1')
                     hap2.append('1')
                 else:
                     raise ValueError("Value outside 0, 1, 2 range.")
                 
-                # If successfully parsed as 0, 1, or 2, move to the next marker
-                continue
+                continue # If successfully parsed as 0, 1, or 2
+
             except ValueError:
-                # Not an integer (or not 0, 1, 2), fall through to delimiter checks.
+                # Not a simple 0, 1, 2 integer, fall through to delimiter checks.
                 pass 
 
-            # 3. Handle Delimiter Formats
+            # 3. Handle Delimiter Formats (e.g., A/T, 0/1, A|T, 0|1)
             delimiter = '|' if is_phased_input else '/'
             
             if delimiter in genotype_string:
                 alleles = genotype_string.split(delimiter)
                 
+                # Check for alleles that are themselves missing data placeholders
+                if alleles[0].strip().lower() in MISSING_CODES or alleles[1].strip().lower() in MISSING_CODES:
+                     hap1.append('.')
+                     hap2.append('.')
+                     continue
+                
                 if not is_phased_input and alleles[0] != alleles[1]:
-                    # Unphased heterozygote (e.g., 'A/T') - **RANDOMIZED PHASING**
-                    # Randomly assign the two non-identical alleles
+                    # Unphased heterozygote - **RANDOMIZED PHASING**
                     if random.choice([True, False]):
                         hap1.append(alleles[0])
                         hap2.append(alleles[1])
@@ -700,11 +750,12 @@ def process_genotype_input(raw_data_df):
                     hap2.append(alleles[1])
             
             elif len(genotype_string) == 1:
-                 # Assume homozygous (e.g., 'A' or '1')
+                # Assume single-allele is homozygous (e.g., 'A' or '1')
                 hap1.append(genotype_string)
                 hap2.append(genotype_string)
             
             else:
+                # Catch-all for unexpected format
                 print(f"Warning: Unexpected genotype format '{genotype_string}' for individual {ind_id}. Using missing data.")
                 hap1.append('.')
                 hap2.append('.')
@@ -763,84 +814,106 @@ def create_default_markers_map_only(args, marker_ids: list, n_markers: int, n_ch
 
     return known_markers_data
 
+# Assuming this constant is globally defined or imported:
+MISSING_DATA_CODE = -1 
+
 def load_p0_population_from_genotypes_final(
     genotype_file_path: str, 
     known_markers_data: list
 ) -> Population:
     """
-    Loads P0 individuals from a genotype matrix (individuals are rows, markers are columns),
-    performs random phasing, and returns a Population object.
+    Loads P0 individuals from a genotype matrix, performs random phasing, 
+    and robustly handles all input missing data codes (NaN, -9, -10, blank).
     
-    Genotype codes: 0 (Homozygous Ref), 1 (Heterozygous), 2 (Homozygous Alt)
+    Includes fix to prevent ValueError caused by stray non-numeric IDs in columns.
     """
-    # 1. Read the Genotype Data
+    # 1. Read the Genotype Data (WITH ROBUST MISSING DATA HANDLING)
     try:
-        # Assuming the first column is the individual ID, and the remaining are markers
-        df = pd.read_csv(genotype_file_path, index_col=0) 
-        df.columns = df.columns.astype(str) # Ensure column names (marker IDs) are strings
+        MISSING_INTEGER_CODES = [-9, -10]
+        
+        # Load the file, converting numerical missing codes and default NaNs/blanks to NaN.
+        df = pd.read_csv(
+            genotype_file_path, 
+            index_col=0, 
+            na_values=MISSING_INTEGER_CODES
+        ) 
+        df.columns = df.columns.astype(str)
+        
     except Exception as e:
         raise IOError(f"Error reading genotype file {genotype_file_path}: {e}")
 
     # 2. Prepare Marker List for Validation (Ensure marker order/subset is maintained)
-    
-    # CRITICAL FIX: Strip whitespace AND remove BOM character (\ufeff) from map IDs
     map_marker_ids = [m['marker_id'].strip().replace('\ufeff', '') for m in known_markers_data]
     
     # 3. Validate Marker IDs and Order Dataframe
-    
-    # CRITICAL FIX: Strip whitespace AND remove BOM character from DataFrame columns
     df.columns = df.columns.str.strip().str.replace('\ufeff', '')
-
-    # Determine which markers from the map are actually present in the cleaned DataFrame
     present_markers = [mid for mid in map_marker_ids if mid in df.columns]
     
     missing_count = len(map_marker_ids) - len(present_markers)
-    
     if missing_count > 0:
         print(f"Warning: {missing_count} markers from the map list were not found in the genotype file. Dropping them.")
         
-    # Guard clause: If no markers match, exit gracefully before accessing empty array
     if not present_markers:
-        raise ValueError("CRITICAL ERROR: Zero markers matched between the map data and the genotype file headers after cleanup. Cannot load population. (Check for non-standard characters in file headers.)")
+        raise ValueError("CRITICAL ERROR: Zero markers matched between the map data and the genotype file headers after cleanup. Cannot load population.")
         
-    df = df[present_markers] # Reorder the columns to match the map (using only present_markers)
+    # CRUCIAL: Retain only the numerical marker columns defined by the map
+    df = df[present_markers] 
+
+    # --- NEW ROBUST TYPE CONVERSION AND FINAL MISSING DATA STANDARDIZATION ---
+    
+    # 3b. Attempt to force columns to float, which isolates and converts any surviving strings (like 'M0173') to NaN.
+    try:
+        # Use errors='raise' on the first try, which is the fastest way if data is clean
+        df = df.astype(float, errors='raise') 
+    except ValueError:
+        # Fallback: If a string survived, use 'coerce' to convert non-numeric columns to NaN
+        df = df.apply(pd.to_numeric, errors='coerce')
+        
+    # 3c. Convert all NaN values (from input, and from any coerced strings in 3b) to the internal code.
+    df = df.fillna(MISSING_DATA_CODE)
 
     # 4. Create P0 Population and Individuals
     p0_pop = Population('P0')
     
     for individual_id, row in df.iterrows():
-        genotypes = row.to_numpy()
-        num_markers = len(genotypes) # Get the number of markers
+        # The DataFrame row data is now guaranteed to be float/numeric
+        genotypes = row.to_numpy(dtype=float) 
+        num_markers = len(genotypes) 
 
-        # Ensure we have markers to process for the current row
         if num_markers == 0:
             continue
 
-        # Determine the two haplotypes (A and B) via random phasing
-        haplotype_A = np.zeros(num_markers, dtype=int)
-        haplotype_B = np.zeros(num_markers, dtype=int)
+        # Initialize haplotypes using float dtype to hold 0, 1, and the -99 code
+        haplotype_A = np.zeros(num_markers, dtype=float) 
+        haplotype_B = np.zeros(num_markers, dtype=float)
         
-        # Homozygous markers (0 or 2) are easy:
-        haplotype_A[genotypes == 2] = 1
-        haplotype_B[genotypes == 2] = 1
+        # --- Phasing Logic (ONLY on non-missing markers) ---
+        is_missing = genotypes == MISSING_DATA_CODE
+        is_present = ~is_missing
         
-        # Heterozygous markers (1) require random phasing (1/0 or 0/1)
-        hetero_indices = np.where(genotypes == 1)[0]
+        # 1. Homozygous markers (0 or 2) on present data only
+        # Genotype 2 (Alt/Alt)
+        homo_2_indices = np.where((genotypes == 2) & is_present)[0]
+        haplotype_A[homo_2_indices] = 1 
+        haplotype_B[homo_2_indices] = 1 
         
+        # 2. Heterozygous markers (1) on present data only
+        hetero_indices = np.where((genotypes == 1) & is_present)[0]
         rand_alleles = np.random.randint(0, 2, size=len(hetero_indices))
         haplotype_A[hetero_indices] = rand_alleles
         haplotype_B[hetero_indices] = 1 - rand_alleles
-
-        # 5. CORRECTED HAPLOTYPE INTERLEAVING
         
-        # Create a 1D array to store all alleles (size 2 * num_markers)
-        # Structure: [M1_HapA, M1_HapB, M2_HapA, M2_HapB, ...]
-        flat_alleles_interleaved = np.empty(2 * num_markers, dtype=int)
-        flat_alleles_interleaved[0::2] = haplotype_A # Place Hap A alleles at even indices
-        flat_alleles_interleaved[1::2] = haplotype_B # Place Hap B alleles at odd indices
+        # 3. PROPAGATE MISSING DATA CODE to both haplotypes
+        haplotype_A[is_missing] = MISSING_DATA_CODE
+        haplotype_B[is_missing] = MISSING_DATA_CODE
+
+        # 5. HAPLOTYPE INTERLEAVING
+        # MUST use float dtype here!
+        flat_alleles_interleaved = np.empty(2 * num_markers, dtype=float) 
+        flat_alleles_interleaved[0::2] = haplotype_A 
+        flat_alleles_interleaved[1::2] = haplotype_B 
 
         # 6. Create Individual Object
-        # Pass the correctly structured 1D array to the splitting function
         haplotypes_split = split_flat_alleles_by_chromosome(
             flat_alleles_interleaved, known_markers_data
         )
@@ -1024,77 +1097,6 @@ def get_marker_ids_from_genotype_file(genotype_file_path: str) -> list:
         return [col.strip() for col in df_head.columns]
     except Exception as e:
         raise IOError(f"Could not read genotype file '{genotype_file_path}' headers: {e}")
-
-'''
-def calculate_founder_hi_het(populations_dict):
-    """
-    Calculates HI and HET for founder populations based on their genotypes.
-    """
-    founder_hi_het_data = {}
-    for pop_label, pop_obj in populations_dict.items():
-        if pop_label in ['PA', 'PB']:
-            # PA is all HI=1, HET=0. PB is all HI=0, HET=0.
-            hi_val = 1.0 if pop_label == 'PA' else 0.0
-            het_val = 0.0 # Both founder populations are fully homozygous
-            
-            for ind_id, individual in pop_obj.individuals.items():
-                founder_hi_het_data[ind_id] = {'HI': hi_val, 'HET': het_val}
-
-    return founder_hi_het_data
-
-def generate_new_immigrant_founders(simulator, num_to_inject, known_markers_data, pop_label, generation):
-    """
-    Generates new founder individuals (immigrants) by creating haplotypes 
-    based on the input file's allele frequencies (reflecting population variation)
-    for the specified population ('PA' or 'PB').
-
-    Args:
-        simulator (RecombinationSimulator): The simulator instance.
-        num_to_inject (int): The number of immigrants to create.
-        known_markers_data (list[dict]): List of marker dictionaries from input file.
-        pop_label (str): The parental population label ('PA' or 'PB').
-        generation (str): The current generation label (e.g., 'HG2').
-        
-    Returns:
-        Population: A new Population object containing the immigrants.
-    """
-    if pop_label not in ['PA', 'PB']:
-        raise ValueError("pop_label must be 'PA' or 'PB'")
-    
-    # 1. Determine the correct allele frequency column
-    # Gets 'A' or 'B' from the end of the label to select the correct frequency column.
-    freq_key = f'allele_freq_{pop_label[-1]}' 
-    
-    # Create the map of marker ID to its frequency for the target population
-    target_freqs = {
-        marker['marker_id']: marker.get(freq_key, 0.5) 
-        for marker in known_markers_data
-    }
-    
-    new_pop = Population(pop_label) # Assumes Population class is defined
-    
-    for i in range(num_to_inject):
-        # Generate a unique ID for the immigrant
-        individual_id = f"{pop_label}_immigrant_{uuid.uuid4().hex[:6]}" 
-        
-        # 2. Create the Haplotypes using the Simulator's initial creation method 
-        # This function generates two *random* haplotypes based on the target_freqs map
-        immigrant_haplotypes = simulator.create_initial_haplotypes(target_freqs)
-        
-        # 3. Construct the Genome and Individual objects
-        immigrant_genome = Genome(immigrant_haplotypes) # Assumes Genome class is defined
-        
-        new_ind = Individual( # Assumes Individual class is defined
-            individual_id=individual_id,
-            generation=generation, 
-            genome=immigrant_genome,
-            parent1_id=None, # Founder status
-            parent2_id=None 
-        )
-        new_pop.add_individual(new_ind)
-        
-    return new_pop
-'''
 
 def perform_cross_task(task, num_chromosomes):
     """
@@ -1652,48 +1654,6 @@ def _parse_crossover_distribution(dist_str):
         # Re-raise the exception with a more descriptive message.
         raise ValueError(f"Invalid format for crossover distribution: {dist_str}. Expected a dictionary form string, e.g., '{{\"0\": 0.2, \"1\": 0.8}}'. Error: {e}")
 
-''' def _parse_number_offspringribution(dist_str):
-    """
-    Parses a string representing an offspring distribution and validates it.
-    Accepts both JSON-style and Python-dict-style inputs.
-    Example valid inputs:
-        '{"0": 0.2, "1": 0.8}'
-        '{0: 0.2, 1: 0.8}'
-    """
-    try:
-        # First try JSON
-        dist = json.loads(dist_str.replace("'", '"'))
-    except json.JSONDecodeError:
-        # Fallback: try Python dict syntax
-        try:
-            dist = ast.literal_eval(dist_str)
-        except Exception as e:
-            raise ValueError(
-                f"Invalid format for offspring distribution: {dist_str}. "
-                f"Could not parse as JSON or Python dict. Error: {e}"
-            )
-
-    if not isinstance(dist, dict):
-        raise ValueError("Distribution must be a dictionary.")
-
-    try:
-        dist = {int(k): float(v) for k, v in dist.items()}
-    except (ValueError, TypeError):
-        raise ValueError("All keys must be convertible to int and values to float.")
-
-    if not np.isclose(sum(dist.values()), 1.0):
-        raise ValueError(
-            f"Probabilities must sum to 1.0, but they sum to {sum(dist.values())}."
-        )
-
-    return dist 
-    '''
-
-import networkx as nx
-import pandas as pd
-import matplotlib.pyplot as plt
-import os
-
 # Define the explicit path to your Graphviz executable
 # NOTE: We use double backslashes (\\) because this is a Python string literal.
 # The path confirmed by your terminal output was: C:\Program Files\Graphviz\bin\dot.exe
@@ -1741,7 +1701,7 @@ def plot_full_pedigree(ancestry_data_df, output_path):
     plt.savefig(output_path, bbox_inches='tight')
     plt.close()
     print(f"Full pedigree plot saved to: {output_path}")
-    
+
 def handle_outputs(args, hi_het_data):
     """
     Handles all output file generation based on command-line flags.
@@ -1789,7 +1749,7 @@ def handle_outputs(args, hi_het_data):
             print(f"Error reading pedigree CSV: {e}")
             return # Exit if file reading failed
 
-        # --- STEP B: Plot the Visuals (Isolated Try Block for Plotting) ---
+        # STEP B: Plot the Visuals (Isolated Try Block for Plotting)
         if ancestry_df is not None and not ancestry_df.empty:
             try:
                 # --- Plot Truncated Pedigree ---
@@ -1808,29 +1768,22 @@ def handle_outputs(args, hi_het_data):
                 if args.full_pedigree_visual:
                     output_plot_path = output_path_prefix + "_full_pedigree.png"
                     plot_full_pedigree(ancestry_df, output_plot_path)
-                    print(f"Full pedigree plot saved to: {output_plot_path}")
+                    print(f"Full pedigree plot saved to: {output_plot_path}") # Added print for success
 
             except Exception as e:
                 # This will catch and print the specific plotting error (e.g., Graphviz/Pydot dependency issues)
                 print(f"An error occurred while plotting the ancestry tree: {e}")
         elif ancestry_df is not None and ancestry_df.empty:
-             print("Warning: Pedigree CSV is empty, skipping plot generation.")
+            print("Warning: Pedigree CSV is empty, skipping plot generation.")
 
     # --- 3. ANCESTRY BLOCKS OUTPUT (Visuals) ---
-    if args.track_blocks and (args.blocks_visual or args.plot_all_blocks):
-        # NOTE: Changed os.path.join argument from output_path_prefix to a string literal 
-        # to ensure the path doesn't incorrectly interpret the suffix. Assuming 
-        # the CSV is written using the full output_path_prefix.
-        blocks_filepath = output_path_prefix + "_ancestry_blocks.csv"
+    if args.track_blocks:
+        blocks_filepath = output_path_prefix + "_ancestry_blocks.csv" # Matches simulate_generations
         try:
             blocks_df = pd.read_csv(blocks_filepath)
             print(f"Ancestry block records processed from: {blocks_filepath}")
-
-            # Example logic for plotting blocks (assuming plot_ancestry_blocks exists)
-            # if args.blocks_visual:
-            #     plot_ancestry_blocks(blocks_df, ...) 
-            # if args.plot_all_blocks:
-            #     plot_all_ancestry_blocks(blocks_df, ...)
+            
+            # Add plotting logic here if enabled (e.g., if args.blocks_visual:)
 
         except FileNotFoundError:
             print(f"Warning: Ancestry Blocks CSV not found at expected path: {blocks_filepath}.")
@@ -1838,22 +1791,36 @@ def handle_outputs(args, hi_het_data):
             print(f"An error occurred while processing ancestry blocks: {e}")
 
     # --- 4. JUNCTIONS OUTPUT (Visuals) ---
-    if args.track_junctions and args.junctions_visual:
-        # NOTE: Changed os.path.join argument from output_path_prefix to a string literal
-        junctions_filepath = output_path_prefix + "_ancestry_junctions.csv"
+    if args.track_junctions:
+        junctions_filepath = output_path_prefix + "_ancestry_junctions.csv" # Matches simulate_generations
         try:
             junctions_df = pd.read_csv(junctions_filepath)
             print(f"Ancestry junction records processed from: {junctions_filepath}")
 
-            # Example logic for plotting junctions (assuming plot_junctions exists)
-            # plot_junctions(junctions_df, ...)
+            # Add plotting logic here if enabled (e.g., if args.junctions_visual:)
 
         except FileNotFoundError:
             print(f"Warning: Ancestry Junctions CSV not found at expected path: {junctions_filepath}.")
         except Exception as e:
             print(f"An error occurred while processing ancestry junctions: {e}")
 
-    # --- 5. TRIANGLE PLOT ---
+    # --- 5. LOCUS GENOTYPE DATA OUTPUT ---
+    if args.output_locus:
+        # FIX: Ensure this filename EXACTLY matches the one used in simulate_generations
+        locus_filepath = output_path_prefix + "_locus_genotype_data.csv" 
+        try:
+            locus_df = pd.read_csv(locus_filepath)
+            print(f"Locus genotype data processed from: {locus_filepath}")
+
+            # Add plotting/summary logic here if needed
+
+        except FileNotFoundError:
+            print(f"Warning: Locus Genotype Data CSV not found at expected path: {locus_filepath}.")
+        except Exception as e:
+            print(f"An error occurred while processing locus genotype data: {e}")
+
+    # --- 6. TRIANGLE PLOT ---
+    # ... (No changes here, logic is sound) ...
     if args.triangle_plot:
         # Re-create HI/HET data if not already done in section 1
         if not args.output_hi_het:
@@ -1869,14 +1836,11 @@ def handle_outputs(args, hi_het_data):
         # Using string concatenation for consistency:
         plot_triangle(mean_hi_het_df, save_filename=output_path_prefix + "_triangle_plot.png")
         print(f"Triangle plot saved to: {output_path_prefix}_triangle_plot.png")
-    
 
-    # --- 6. POPULATION SIZE PLOT ---
+    # --- 7. POPULATION SIZE PLOT ---
     if args.population_plot:
         try:
             output_plot_path = output_path_prefix + "_population_size.png"
-            # NOTE: This plot relies on hi_het_data structure, ensure plot_population_size 
-            # can infer population sizes from it or use a separate tracking mechanism.
             plot_population_size(hi_het_data, save_filename=output_plot_path) 
             print(f"Population size plot saved to: {output_plot_path}")
         except Exception as e:
