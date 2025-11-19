@@ -63,9 +63,6 @@ class Population:
     def get_individual_by_id(self, individual_id):
         return self.individuals.get(individual_id)
 
-import numpy as np
-import random
-# Assume Individual, Genome, etc., are defined elsewhere
 
 class RecombinationSimulator:
     """
