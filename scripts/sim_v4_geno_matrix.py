@@ -9,7 +9,6 @@ import matplotlib.pyplot as plt
 import time
 import re
 from typing import Dict, List, Any, Optional
-import csv
 from collections import defaultdict
 import warnings
 import copy
@@ -99,6 +98,10 @@ class RecombinationSimulator:
         self.interval_morgans = self._precompute_interval_morgans()
         self.cumulative_morgans = {c: np.cumsum(self.interval_morgans[c]) for c in self.interval_morgans}
         self.interval_recomb = {c: self._compute_r_from_morgans(self.interval_morgans[c]) for c in self.interval_morgans}
+        # after computing interval_morgans and interval_recomb:
+        self._annotate_marker_intervals()
+
+        self.populations_dict = {}
 
     # -----------------------
     # Map / structure helpers
@@ -214,8 +217,37 @@ class RecombinationSimulator:
                 raise ValueError("Unknown map_method (choose 'haldane' or 'kosambi')")
             r_arr[i] = min(max(0.0, r), 0.499999)
         return r_arr
+    
+    def _annotate_marker_intervals(self):
+        """
+        Attach interval metadata to each marker dict:
+          - interval_M: genetic length of the interval to the next marker (M)
+          - r_to_next: recombination prob to the next marker (Haldane/Kosambi)
+          - cumpos_M: cumulative position for the marker (M), starting at 0 for first marker
+        This makes downstream code simpler and more robust.
+        """
+        for chrom, markers in self.chromosome_structure.items():
+            if not markers:
+                continue
+            # Retrieve interval_M and r arrays computed earlier
+            interval_M = self.interval_morgans.get(chrom, np.array([], dtype=float))
+            r_arr = self.interval_recomb.get(chrom, np.array([], dtype=float))
 
-    # -----------------------
+            # Build marker-level cumulative positions (length n_markers)
+            if interval_M.size > 0:
+                cumpos = np.concatenate(([0.0], np.cumsum(interval_M)))
+            else:
+                # default all zeros if single marker or no info
+                cumpos = np.zeros(len(markers), dtype=float)
+
+            # annotate markers
+            for i, m in enumerate(markers):
+                # interval_M belongs to interval i -> i in [0..n-2], last marker has no interval_M
+                m['interval_M'] = float(interval_M[i]) if (i < len(interval_M)) else 0.0
+                m['r_to_next'] = float(r_arr[i]) if (i < len(r_arr)) else 0.0
+                m['cumpos_M'] = float(cumpos[i])
+
+    # ----------------------
     # Crossover number sampling
     # -----------------------
     def _simulate_crossovers(self, chromosome_id: str, crossover_dist: Optional[Dict[int, float]]) -> int:
@@ -441,6 +473,13 @@ class RecombinationSimulator:
         immigrant_genome = Genome(immigrant_haplotypes)
         return Individual(individual_id=individual_id, generation=generation, genome=immigrant_genome)
 
+    def get_individual(self, individual_id):
+        for gen_list in self.population.values():
+            for indiv in gen_list:
+                if indiv.individual_id == individual_id:
+                    return indiv
+        return None
+
     def create_initial_haplotypes_from_genotypes(self, individual_genotypes: Dict[str, int]) -> Dict[str, tuple]:
         initial_haplotypes = {}
 
@@ -536,43 +575,48 @@ class RecombinationSimulator:
         return genotypes
 
     def get_ancestry_blocks(self, individual: 'Individual', parent1_id=None, parent2_id=None):
+
         blocks_data = []
+
         for chrom_id, markers in self.chromosome_structure.items():
+
             if not markers:
                 continue
 
             haplotype_tuple = individual.genome.chromosomes[chrom_id]
             marker_positions_cm = self.marker_positions_arrays[chrom_id]
-            marker_ids = np.array([m['marker_id'] for m in markers])
 
             for hap_idx, hap in enumerate(haplotype_tuple):
+
+                # Parent ID label for this haplotype
                 source_parent_id = parent1_id if hap_idx == 0 else parent2_id
 
+                # Identify ancestry transitions
                 transition_indices = np.where(np.diff(hap) != 0)[0] + 1
                 block_start_indices = np.concatenate(([0], transition_indices))
                 block_end_indices = np.concatenate((transition_indices - 1, [len(hap) - 1]))
 
-                ancestries = hap[block_start_indices]
-                start_cms = marker_positions_cm[block_start_indices]
-                end_cms = marker_positions_cm[block_end_indices]
-                start_marker_ids = marker_ids[block_start_indices]
-                end_marker_ids = marker_ids[block_end_indices]
+                # Extract block start/end positions
+                start_positions = marker_positions_cm[block_start_indices]
+                end_positions = marker_positions_cm[block_end_indices]
 
+                # Assign ancestry label
                 for i in range(len(block_start_indices)):
-                    if source_parent_id is not None:
-                        ancestry_column_label = source_parent_id
+
+                    if source_parent_id is None:
+                        # fallback if founder ancestry: PA / PB
+                        ancestry_label = 'PA' if hap[block_start_indices[i]] == 0 else 'PB'
                     else:
-                        ancestry_column_label = 'PA' if ancestries[i] == 0 else 'PB'
+                        ancestry_label = source_parent_id
+
                     blocks_data.append((
-                        individual.individual_id,
-                        chrom_id,
-                        hap_idx + 1,
-                        float(start_cms[i]),
-                        float(end_cms[i]),
-                        start_marker_ids[i],
-                        end_marker_ids[i],
-                        ancestry_column_label
+                        individual.individual_id,      # 1) individual
+                        chrom_id,                      # 2) chromosome
+                        float(start_positions[i]),     # 3) start_pos
+                        float(end_positions[i]),       # 4) end_pos
+                        ancestry_label                 # 5) parent_label
                     ))
+
         return blocks_data
 
 # HELPER FUNCTIONS
@@ -582,10 +626,6 @@ def load_and_preprocess_genotype_data(file_path):
     Loads genotype data where individuals are rows (indexed by PlantID), 
     transposes the data (Markers in rows, Individuals in columns), and 
     then applies the phasing logic via process_genotype_input.
-    
-    :param file_path: Path to the input CSV file.
-    :return: DataFrame containing processed phased data (Markers in rows, 
-             Hap1/Hap2 for each individual in columns).
     """
     
     print(f"Loading genotype data from: {file_path}")
@@ -593,23 +633,26 @@ def load_and_preprocess_genotype_data(file_path):
     # 1. Load the CSV
     raw_df = pd.read_csv(file_path)
     
-    # 2. Set the Index: Use PlantID as the unique identifier (row index)
+    # 2. Set the Index
     if 'PlantID' not in raw_df.columns:
         raise ValueError("Input file must contain a 'PlantID' column.")
         
     raw_df = raw_df.set_index('PlantID')
     
-    # Optional: Drop RametIDs if it's just a secondary ID (as per your structure)
-    if 'RametIDs' in raw_df.columns:
-        raw_df = raw_df.drop(columns=['RametIDs'])
-        
+    # --- REMOVE NON-MARKER METADATA COLUMNS ---
+    NON_MARKER_COLUMNS = {
+        "PlantID", "RametIDs", "SampleID", "ID", 
+        "individual", "genotype_id"
+    }
+
+    cols_to_drop = [c for c in raw_df.columns if c in NON_MARKER_COLUMNS]
+    if cols_to_drop:
+        print(f"Removing non-marker columns: {cols_to_drop}")
+        raw_df = raw_df.drop(columns=cols_to_drop)
+    
     print("DataFrame successfully indexed by PlantID.")
 
-    if raw_df['PlantID'].duplicated().any():
-        raise ValueError("Duplicate PlantID values found.")
-    
-    # 3. Transpose the DataFrame (required for simulation's marker-based processing)
-    # The columns (markers) become the index (rows), and the index (individuals) become columns.
+    # 3. Transpose so markers become rows
     genotype_df_transposed = raw_df.transpose()
 
     if genotype_df_transposed.empty:
@@ -617,8 +660,7 @@ def load_and_preprocess_genotype_data(file_path):
 
     print("DataFrame transposed (Markers in rows, Individuals in columns).")
     
-    # 4. Process Phasing: Call the function that handles 0/1, A/T, 0|1, and 0, 1, 2 formats
-    # This assumes 'process_genotype_input' is defined elsewhere in your script.
+    # 4. Phasing
     phased_genotype_df = process_genotype_input(genotype_df_transposed)
     
     print("Genotype data successfully phased and ready for simulation.")
@@ -770,7 +812,7 @@ def process_genotype_input(raw_data_df: pd.DataFrame) -> pd.DataFrame:
 
 def create_default_markers_map_only(args, marker_ids: list, n_markers: int, n_chromosomes: int) -> list:
     """
-    Generates a list of marker dictionaries with synthetic map data (ID, Chr, BP).
+    Generates a list of marker dictionaries with synthetic map data (ID, chromosome, BP).
     This function is used when the genotype file is provided but the map file is missing.
     It uses the actual marker_ids provided from the genotype file headers.
     """
@@ -826,28 +868,22 @@ def load_p0_population_from_genotypes_final(
     """
     Loads P0 individuals from a genotype matrix, performs random phasing, 
     and robustly handles all input missing data codes (NaN, -9, -10, blank).
-    
-    Includes fix to prevent ValueError caused by stray non-numeric IDs in columns.
     """
-    # 1. Read the Genotype Data (WITH ROBUST MISSING DATA HANDLING)
+    # 1. Read the Genotype Data
     try:
         MISSING_INTEGER_CODES = [-9, -10]
-        
-        # Load the file, converting numerical missing codes and default NaNs/blanks to NaN.
         df = pd.read_csv(
             genotype_file_path, 
             index_col=0, 
             na_values=MISSING_INTEGER_CODES
         ) 
         df.columns = df.columns.astype(str)
-        
     except Exception as e:
         raise IOError(f"Error reading genotype file {genotype_file_path}: {e}")
 
-    # 2. Prepare Marker List for Validation (Ensure marker order/subset is maintained)
+    # 2. Marker ID cleanup + consistency
     map_marker_ids = [m['marker_id'].strip().replace('\ufeff', '') for m in known_markers_data]
     
-    # 3. Validate Marker IDs and Order Dataframe
     df.columns = df.columns.str.strip().str.replace('\ufeff', '')
     present_markers = [mid for mid in map_marker_ids if mid in df.columns]
     
@@ -856,68 +892,75 @@ def load_p0_population_from_genotypes_final(
         print(f"Warning: {missing_count} markers from the map list were not found in the genotype file. Dropping them.")
         
     if not present_markers:
-        raise ValueError("CRITICAL ERROR: Zero markers matched between the map data and the genotype file headers after cleanup. Cannot load population.")
+        raise ValueError("CRITICAL ERROR: Zero markers matched between map and genotype file.")
         
-    # CRUCIAL: Retain only the numerical marker columns defined by the map
-    df = df[present_markers] 
+    df = df[present_markers]
 
-    # --- NEW ROBUST TYPE CONVERSION AND FINAL MISSING DATA STANDARDIZATION ---
-    
-    # 3b. Attempt to force columns to float, which isolates and converts any surviving strings (like 'M0173') to NaN.
+    # 3. Convert to numeric cleanly
     try:
-        # Use errors='raise' on the first try, which is the fastest way if data is clean
-        df = df.astype(float, errors='raise') 
+        df = df.astype(float, errors='raise')
     except ValueError:
-        # Fallback: If a string survived, use 'coerce' to convert non-numeric columns to NaN
         df = df.apply(pd.to_numeric, errors='coerce')
         
-    # 3c. Convert all NaN values (from input, and from any coerced strings in 3b) to the internal code.
     df = df.fillna(MISSING_DATA_CODE)
 
-    # 4. Create P0 Population and Individuals
+    # 4. Create population
     p0_pop = Population('P0')
     
     for individual_id, row in df.iterrows():
-        # The DataFrame row data is now guaranteed to be float/numeric
+
         genotypes = row.to_numpy(dtype=float) 
         num_markers = len(genotypes) 
-
         if num_markers == 0:
             continue
 
-        # Initialize haplotypes using float dtype to hold 0, 1, and the -99 code
+        # Allocate haplotypes
         haplotype_A = np.zeros(num_markers, dtype=float) 
         haplotype_B = np.zeros(num_markers, dtype=float)
         
-        # --- Phasing Logic (ONLY on non-missing markers) ---
         is_missing = genotypes == MISSING_DATA_CODE
         is_present = ~is_missing
         
-        # 1. Homozygous markers (0 or 2) on present data only
-        # Genotype 2 (Alt/Alt)
+        # Homozygous 2/2
         homo_2_indices = np.where((genotypes == 2) & is_present)[0]
         haplotype_A[homo_2_indices] = 1 
         haplotype_B[homo_2_indices] = 1 
         
-        # 2. Heterozygous markers (1) on present data only
+        # Heterozygous
         hetero_indices = np.where((genotypes == 1) & is_present)[0]
         rand_alleles = np.random.randint(0, 2, size=len(hetero_indices))
         haplotype_A[hetero_indices] = rand_alleles
         haplotype_B[hetero_indices] = 1 - rand_alleles
         
-        # 3. PROPAGATE MISSING DATA CODE to both haplotypes
+        # Missing propagate
         haplotype_A[is_missing] = MISSING_DATA_CODE
         haplotype_B[is_missing] = MISSING_DATA_CODE
 
-        # 5. HAPLOTYPE INTERLEAVING
-        # MUST use float dtype here!
+        # 5. Interleave haplotypes A/B
         flat_alleles_interleaved = np.empty(2 * num_markers, dtype=float) 
         flat_alleles_interleaved[0::2] = haplotype_A 
         flat_alleles_interleaved[1::2] = haplotype_B 
 
-        # 6. Create Individual Object
+        # ---------------------------------------------------------------------
+        # 🔥 CRITICAL NEW FIX
+        # ---------------------------------------------------------------------
+        expected_len = 2 * len(known_markers_data)
+        actual_len = len(flat_alleles_interleaved)
+
+        if actual_len != expected_len:
+            print("\nERROR: Allele array length mismatch!")
+            print(f"  Markers in map:      {len(known_markers_data)}")
+            print(f"  Markers in genotype: {num_markers}")
+            print(f"  Expected allele count: {expected_len}")
+            print(f"  Actual allele count:   {actual_len}")
+            print("  → Marker ordering or filtering mismatch.\n")
+            raise ValueError("Allele array does not match marker map length.")
+        # ---------------------------------------------------------------------
+
+        # 6. Split by chromosome safely
         haplotypes_split = split_flat_alleles_by_chromosome(
-            flat_alleles_interleaved, known_markers_data
+            flat_alleles_interleaved, 
+            known_markers_data
         )
         
         individual = Individual(
@@ -1000,186 +1043,100 @@ def read_marker_map(map_file_path: str, args: argparse.Namespace) -> list:
     # ------------------------------------------------------------
     return df[['marker_id', 'chromosome', 'base_pair']].to_dict('records')
 
-def _compute_interval_morgans_and_r(markers: List[Dict[str, Any]], cM_per_Mb: float = 1.0,
-                                    map_method: str = "haldane") -> tuple[np.ndarray, np.ndarray]:
+def build_complete_marker_map(raw_markers, args):
     """
-    Given a sorted list of markers on a chromosome, compute:
-      - interval_M (Morgans) array of length n_markers-1
-      - r_to_next array of length n_markers-1 (recombination fraction)
-    Rules:
-      * If markers have explicit 'cm' or 'map_distance' values, use those.
-      * Else if markers have 'base_pair', convert using cM_per_Mb to produce cm, then Morgans.
-      * Else fallback to tiny default Morgan per interval.
-
-    Returns (interval_M, r_arr)
+    Takes raw marker definitions (possibly missing map_distance) and returns a
+    complete, ordered map with:
+        - chromosome, marker_id
+        - base_pair (bp)
+        - map_distance (cM)
+        - cumulative_map_position (cM)
+        - recomb_rate (Haldane r per interval)
     """
-    n = len(markers)
-    if n < 2:
-        return np.array([], dtype=float), np.array([], dtype=float)
+    # Convert to DataFrame for easier processing
+    df = pd.DataFrame(raw_markers).copy()
 
-    # Extract cm and bp arrays (None if missing)
-    cms = []
-    bps = []
-    for m in markers:
-        cm_val = m.get('cm', None) if m.get('cm', None) is not None else m.get('map_distance', None)
-        cms.append(float(cm_val) if cm_val is not None else None)
-        bp_val = m.get('base_pair', None)
-        bps.append(float(bp_val) if bp_val is not None else None)
+    # --- 1) Ensure required columns exist ---
+    if "chromosome" not in df.columns:
+        raise ValueError("Marker map missing 'chromosome' column.")
+    if "marker_id" not in df.columns:
+        raise ValueError("Marker map missing 'marker_id' column.")
 
-    interval_M = np.empty(n - 1, dtype=float)
+    # If base_pair missing – assign uniform positions
+    n_markers = len(df)
+    for chr_id in df["chromosome"].unique():
+        mask = df["chromosome"] == chr_id
+        chr_markers = df.loc[mask]
 
-    for i in range(n - 1):
-        cm1, cm2 = cms[i], cms[i + 1]
-        if (cm1 is not None) and (cm2 is not None):
-            d_cM = abs(cm2 - cm1)
-            interval_M[i] = max(0.0, d_cM / 100.0)
-        else:
-            bp1, bp2 = bps[i], bps[i + 1]
-            if (bp1 is not None) and (bp2 is not None) and (not np.isclose(bp1, bp2)):
-                d_bp = abs(bp2 - bp1)
-                d_cM = (d_bp / 1_000_000.0) * float(cM_per_Mb)
-                interval_M[i] = max(0.0, d_cM / 100.0)
-            else:
-                # fallback: estimate via chromosome span if available
-                first_val = markers[0].get('cm', markers[0].get('base_pair', 0.0))
-                last_val = markers[-1].get('cm', markers[-1].get('base_pair', first_val))
-                try:
-                    span = abs(float(last_val) - float(first_val))
-                except Exception:
-                    span = 0.0
-                if span > 1e4:
-                    est_cM = (span / 1_000_000.0) * float(cM_per_Mb)
-                    interval_M[i] = max(0.0, (est_cM / max(1, (n - 1))) / 100.0)
-                else:
-                    interval_M[i] = 1e-6
+        if "base_pair" not in df.columns or chr_markers["base_pair"].isna().all():
+            df.loc[mask, "base_pair"] = np.linspace(
+                0,
+                args.chr_length if hasattr(args, "chr_length") else 1e8,
+                chr_markers.shape[0]
+            )
 
-    # Compute recombination fraction r per interval using mapping function
-    r_arr = np.empty_like(interval_M, dtype=float)
-    for idx, d_M in enumerate(interval_M):
-        if map_method.lower() == "haldane":
-            r = 0.5 * (1.0 - math.exp(-2.0 * float(d_M)))
-        elif map_method.lower() == "kosambi":
-            r = (math.exp(4.0 * float(d_M)) - 1.0) / (2.0 * (math.exp(4.0 * float(d_M)) + 1.0))
-        else:
-            raise ValueError("Unknown map_method: choose 'haldane' or 'kosambi'")
-        r_arr[idx] = min(max(0.0, r), 0.499999)
+    # If map_distance missing – compute from bp spacing
+    if "map_distance" not in df.columns:
+        df["map_distance"] = np.nan
 
-    return interval_M, r_arr
+    df["map_distance"] = df["map_distance"].astype(float)
 
-def build_complete_marker_map(raw_markers: List[Dict[str, Any]], args) -> List[Dict[str, Any]]:
+    for chr_id in df["chromosome"].unique():
+        mask = df["chromosome"] == chr_id
+        df_chr = df.loc[mask].sort_values("base_pair")
+
+        bp = df_chr["base_pair"].values
+
+        # Compute Δbp and convert to cM if needed
+        delta_bp = np.diff(bp)
+
+        # If map distances missing: convert bp → cM using args.cm_per_bp
+        cm_per_bp = getattr(args, "cm_per_bp", 1e-6)  # default: 1 cM per Mb
+        delta_cm = delta_bp * cm_per_bp
+
+        # First marker has 0 cM distance
+        chr_cm = np.concatenate([[0], delta_cm])
+
+        df.loc[df_chr.index, "map_distance"] = chr_cm
+
+    # Compute cumulative map positions
+    df["cumulative_map_position"] = df.groupby("chromosome")["map_distance"].cumsum()
+
+    # Compute Haldane recombination rates for intervals
+    df["recomb_rate"] = np.nan
+    for chr_id in df["chromosome"].unique():
+        mask = df["chromosome"] == chr_id
+        df_chr = df.loc[mask].sort_values("cumulative_map_position")
+
+        cm = df_chr["map_distance"].values
+        morgan = cm / 100.0  # convert to Morgans
+
+        # Haldane model: r = 0.5 * (1 - exp(-2d))
+        r = 0.5 * (1 - np.exp(-2 * morgan))
+
+        df.loc[df_chr.index, "recomb_rate"] = r
+
+    return df.to_dict("records")
+
+def validate_marker_map(markers):
     """
-    Build a complete marker map list from raw_markers (read from file or generated).
-    Ensures for each marker:
-      - 'chromosome' present and string
-      - 'base_pair' present if available (float)
-      - 'cm' present (either from input or computed from bp using args.cM_per_Mb)
-      - 'morgan' (cm/100) optional
-      - 'interval_M' and 'r_to_next' for intervals
-    Returns the updated list (still grouped by chromosome in original order).
+    Ensures the map is valid:
+        - sorted
+        - distances ≥ 0
+        - recomb_rate < 0.5
     """
-    if not raw_markers:
-        return []
+    df = pd.DataFrame(markers)
 
-    # Normalize chromosome to string and preserve original order
-    for m in raw_markers:
-        if 'chromosome' in m and m['chromosome'] is not None:
-            m['chromosome'] = str(m['chromosome'])
-        else:
-            # leave None; caller should have assigned chromosomes earlier
-            m['chromosome'] = m.get('chromosome')
+    for chr_id in df["chromosome"].unique():
+        df_chr = df[df["chromosome"] == chr_id].sort_values("cumulative_map_position")
 
-        # Ensure base_pair and cm types normalized if present
-        if 'base_pair' in m and m['base_pair'] is not None:
-            try:
-                m['base_pair'] = float(m['base_pair'])
-            except Exception:
-                m['base_pair'] = None
+        if (df_chr["map_distance"] < 0).any():
+            raise ValueError(f"Negative map distance found on chromosome {chr_id}.")
 
-        # prefer cm or map_distance
-        cm_val = m.get('cm', None)
-        if cm_val is None:
-            cm_val = m.get('map_distance', None)
-        if cm_val is not None:
-            try:
-                m['cm'] = float(cm_val)
-            except Exception:
-                m['cm'] = None
-        else:
-            m['cm'] = None
+        if (df_chr["recomb_rate"] >= 0.5).any():
+            raise ValueError(f"Invalid recombination rate ≥0.5 on chromosome {chr_id}.")
 
-    # Group by chromosome in order encountered - preserve relative order
-    chrom_groups: Dict[str, List[Dict[str, Any]]] = {}
-    for m in raw_markers:
-        chrom = m.get('chromosome', None)
-        if chrom is None:
-            # assign unknown to '1' (you can change policy)
-            chrom = '1'
-            m['chromosome'] = chrom
-        chrom_groups.setdefault(str(chrom), []).append(m)
-
-    # For each chromosome, sort by cm if present else by base_pair else keep order
-    updated_markers = []
-    for chrom in sorted(chrom_groups.keys(), key=lambda x: int(x) if x.isdigit() else x):
-        markers = chrom_groups[chrom]
-        # If there are values for cm or base_pair, use them to sort
-        markers.sort(key=lambda x: (x.get('cm') if x.get('cm') is not None else x.get('base_pair', 0.0)))
-        # Compute interval_M and r
-        interval_M, r_arr = _compute_interval_morgans_and_r(markers, cM_per_Mb=args.cM_per_Mb, map_method=getattr(args, 'map_method', 'haldane'))
-        # Attach interval and r info to markers:
-        # marker i will get 'interval_M' (distance to next) and 'r_to_next'
-        for i, m in enumerate(markers):
-            if i < len(interval_M):
-                m['interval_M'] = float(interval_M[i])
-                m['r_to_next'] = float(r_arr[i])
-                m['morgan'] = float(m.get('cm', m.get('map_distance', 0.0))) / 100.0 if m.get('cm', None) is not None else None
-            else:
-                # last marker: no interval to next
-                m['interval_M'] = None
-                m['r_to_next'] = 0.0
-                m['morgan'] = float(m.get('cm', m.get('map_distance', 0.0))) / 100.0 if m.get('cm', None) is not None else None
-
-        updated_markers.extend(markers)
-
-    return updated_markers
-
-def validate_marker_map(final_markers: List[Dict[str, Any]]):
-    """
-    Basic sanity checks:
-      - every marker has marker_id
-      - chromosomes contain >= 1 marker
-      - positions non-decreasing within a chromosome
-      - r_to_next in [0, 0.5)
-    Raises ValueError on failures (you can change to warnings).
-    """
-    if not final_markers:
-        raise ValueError("Marker map is empty.")
-
-    # group and check
-    from collections import defaultdict
-    groups = defaultdict(list)
-    for m in final_markers:
-        groups[str(m['chromosome'])].append(m)
-
-    for chrom, markers in groups.items():
-        if len(markers) == 0:
-            raise ValueError(f"Chromosome {chrom} has no markers.")
-        # check monotonic base positions if present
-        prev_bp = None
-        for m in markers:
-            if 'marker_id' not in m:
-                raise ValueError("Marker missing 'marker_id'.")
-            bp = m.get('base_pair', None)
-            if bp is not None:
-                if prev_bp is not None and bp < prev_bp:
-                    raise ValueError(f"Markers on chromosome {chrom} not sorted by base_pair (found {bp} < {prev_bp}).")
-                prev_bp = bp
-        # check r_to_next bounds
-        for m in markers:
-            r = m.get('r_to_next', None)
-            if r is None:
-                continue
-            if r < 0.0 or r >= 0.5:
-                raise ValueError(f"Recombination fraction r_to_next out of bounds on chr {chrom}, marker {m.get('marker_id')}: {r}")
+    return True
 
 def split_flat_alleles_by_chromosome(
     flat_alleles: list[int], 
@@ -2200,7 +2157,6 @@ def handle_outputs(args, hi_het_data):
     Handles all output file generation based on command-line flags.
     Reads data from files generated during the simulation and produces plots.
     """
-
     # --------------------
     # Create output folder
     # --------------------
@@ -2349,6 +2305,284 @@ def handle_outputs(args, hi_het_data):
         except Exception as e:
             print(f"Error generating population size plot: {e}")
 
+def export_marker_map(known_markers_data: List[Dict[str, Any]], outpath: str):
+    """
+    Export an annotated marker map CSV for inspection.
+    Includes: marker_id, chromosome, base_pair, cm, interval_M, r_to_next, cumpos_M
+    """
+    rows = []
+    for m in known_markers_data:
+        rows.append({
+            "marker_id": m.get("marker_id"),
+            "chromosome": m.get("chromosome"),
+            "base_pair": m.get("base_pair"),
+            "cm": m.get("cm", m.get("map_distance")),
+            "interval_M": m.get("interval_M"),
+            "r_to_next": m.get("r_to_next"),
+            "cumpos_M": m.get("cumpos_M")
+        })
+    df = pd.DataFrame(rows)
+    os.makedirs(os.path.dirname(outpath), exist_ok=True)
+    df.to_csv(outpath, index=False)
+    print(f"[Export] Marker map exported to: {outpath}")
+    return df
+
+def plot_individual_chromosome(
+    individual,
+    simulator: 'RecombinationSimulator',
+    chrom: int,
+    ancestry_blocks_df: Optional[pd.DataFrame] = None,
+    output_path: Optional[str] = None,
+    zoom_bp: Optional[tuple] = None,
+    show_marker_labels: bool = False,
+    max_labels: int = 30
+):
+    """
+    Create a validation PNG showing:
+      - top: hapA (maternal) and hapB (paternal) marker-level allele/origin values (dots/lines)
+      - middle: ancestry_blocks (thick segments) from ancestry_blocks_df (if provided)
+      - bottom/right: cumulative genetic position (cumpos_M) overlay
+    Parameters:
+      - individual: Individual object
+      - simulator: instance of RecombinationSimulator (needed for marker info)
+      - chrom: chromosome number (int or str)
+      - ancestry_blocks_df: DataFrame read from ancestry_blocks.csv (optional)
+      - output_path: full path to save PNG (if None, saves to cwd with auto name)
+      - zoom_bp: (start_bp, end_bp) to zoom; else full chromosome
+      - show_marker_labels: whether to annotate marker IDs (can be crowded)
+    """
+    # Prepare chromosome id string used in simulator
+    chrom_key = str(chrom)
+    markers = simulator.chromosome_structure.get(chrom_key, None)
+    if markers is None or len(markers) == 0:
+        print(f"[Validation] No markers for chromosome {chrom_key}")
+        return
+
+    # Marker arrays and positions
+    # Use base_pair for x-axis if present; else use cumpos_M converted to bp-like axis (we'll present both)
+    # Prefer base_pair for physical positions
+    mp = []
+    cm = []
+    mids = []
+    for m in markers:
+        mp.append(m.get("base_pair", np.nan))
+        cm_val = m.get("cm", m.get("map_distance", np.nan))
+        cm.append(cm_val)
+        mids.append(m.get("marker_id"))
+
+    pos_bp = np.array([float(x) if (x is not None and not pd.isna(x)) else np.nan for x in mp])
+    pos_cm = np.array([float(x) if (x is not None and not pd.isna(x)) else np.nan for x in cm])
+
+    # fallback: if pos_bp all NaN but cumpos_M exists, map cumpos_M -> pseudo-bp for plotting
+    if np.all(np.isnan(pos_bp)):
+        pos_bp = np.array([m.get("cumpos_M", np.nan) for m in markers])
+        using_cum_as_bp = True
+    else:
+        using_cum_as_bp = False
+
+    # haplotypes from individual
+    try:
+        hapA, hapB = individual.genome.chromosomes[chrom_key]
+    except Exception as e:
+        print(f"[Validation] Could not read haplotypes for individual {individual.individual_id}, chr {chrom_key}: {e}")
+        return
+
+    # ensure same length
+    n_markers = len(markers)
+    if len(hapA) != n_markers or len(hapB) != n_markers:
+        print(f"[Validation] Marker count mismatch for chr {chrom_key}: map={n_markers}, hapA={len(hapA)}, hapB={len(hapB)}")
+        return
+
+    # Zoom filtering
+    if zoom_bp is not None:
+        s, e = zoom_bp
+        mask = (~np.isnan(pos_bp)) & (pos_bp >= s) & (pos_bp <= e)
+        if mask.sum() == 0:
+            print("[Validation] Zoom range hides all markers — aborting zoom.")
+            mask = np.arange(n_markers)  # fallback -> all
+        else:
+            indices = np.flatnonzero(mask)
+    else:
+        indices = np.arange(n_markers)
+
+    x = pos_bp[indices]
+    hapA_vals = np.array(hapA)[indices]
+    hapB_vals = np.array(hapB)[indices]
+    mids_sel = [mids[i] for i in indices]
+    pos_cm_sel = pos_cm[indices] if not np.all(np.isnan(pos_cm)) else None
+
+    # Build figure with 3 stacked axes (top raw haplotypes, middle ancestry blocks if provided, bottom cumcM)
+    fig = plt.figure(figsize=(14, 6))
+    gs = fig.add_gridspec(3, 1, height_ratios=[1.0, 0.6, 0.6], hspace=0.25)
+
+    ax_top = fig.add_subplot(gs[0, 0])
+    ax_mid = fig.add_subplot(gs[1, 0])
+    ax_bot = fig.add_subplot(gs[2, 0])
+
+    # Colors for allele values; if values are >1 treat as categorical founder indices
+    unique_vals = np.unique(np.concatenate([hapA_vals, hapB_vals]))
+    # Map unique values to colors
+    cmap = plt.get_cmap("tab10")
+    val_to_color = {v: cmap(i % 10) for i, v in enumerate(unique_vals)}
+
+    # Top: scatter + step lines for haplotypes
+    ax_top.scatter(x, np.zeros_like(x) + 1.1, c=[val_to_color[v] for v in hapA_vals], s=40, label="hapA (maternal)")
+    ax_top.scatter(x, np.zeros_like(x) + 0.9, c=[val_to_color[v] for v in hapB_vals], s=40, label="hapB (paternal)")
+    # add faint connecting lines
+    ax_top.hlines(1.1, x.min() if len(x)>0 else 0, x.max() if len(x)>0 else 1, colors="lightgray", linewidth=0.5)
+    ax_top.hlines(0.9, x.min() if len(x)>0 else 0, x.max() if len(x)>0 else 1, colors="lightgray", linewidth=0.5)
+
+    # legend for values
+    for v in unique_vals:
+        ax_top.scatter([], [], color=val_to_color[v], label=f"value={v}")
+    ax_top.legend(loc="upper right", ncol=2, fontsize=8)
+    ax_top.set_yticks([0.9, 1.1])
+    ax_top.set_yticklabels(["hapB", "hapA"])
+    ax_top.set_xlim(x.min() - 1 if len(x)>0 else 0, x.max() + 1 if len(x)>0 else 1)
+    ax_top.set_title(f"Individual {individual.individual_id} — Chromosome {chrom_key}: raw haplotypes (marker-level)")
+
+    # Middle: draw ancestry blocks if dataframe provided
+    if ancestry_blocks_df is not None:
+        # Expect columns: individual_id, chromosome, start_pos, end_pos, parent_label
+        df_ind = ancestry_blocks_df[
+            (ancestry_blocks_df["individual_id"] == individual.individual_id) &
+            (ancestry_blocks_df["chromosome"].astype(int) == int(chrom))
+        ]
+        if not df_ind.empty:
+            # map parent_label -> color
+            parents = df_ind["parent_label"].unique()
+            parent_colors = {p: cmap(i % 10) for i, p in enumerate(parents)}
+            for _, row in df_ind.iterrows():
+                start = float(row["start_pos"])
+                end = float(row["end_pos"])
+                label = row["parent_label"]
+                ax_mid.plot([start, end], [0.5, 0.5], linewidth=12, solid_capstyle='butt', color=parent_colors[label])
+            # legend
+            handles = [plt.Line2D([0],[0], color=parent_colors[p], lw=8) for p in parents]
+            ax_mid.legend(handles, parents, loc="center right", fontsize=8)
+            ax_mid.set_ylim(0,1)
+            ax_mid.set_yticks([])
+            ax_mid.set_title("Ancestry blocks (from ancestry_blocks.csv)")
+
+        else:
+            ax_mid.text(0.5, 0.5, "No ancestry blocks for this individual/chromosome", ha='center')
+            ax_mid.set_yticks([])
+    else:
+        ax_mid.text(0.5, 0.5, "No ancestry blocks provided", ha='center')
+        ax_mid.set_yticks([])
+
+    # Bottom: cumulative cM if available (pos_cm_sel)
+    if pos_cm_sel is not None and not np.all(np.isnan(pos_cm_sel)):
+        ax_bot.plot(x, pos_cm_sel, marker='o', linestyle='-', linewidth=1)
+        ax_bot.set_ylabel("map position (cM)")
+        ax_bot.set_title("Marker genetic map positions (cM) vs physical positions (bp axis)")
+    else:
+        ax_bot.text(0.5, 0.5, "No genetic map (cM) available for these markers", ha='center')
+        ax_bot.set_yticks([])
+
+    ax_bot.set_xlabel("Physical position (bp)" if not using_cum_as_bp else "Position (cum M used as proxy)")
+
+    # optionally label markers (cap and skip to avoid clutter)
+    if show_marker_labels:
+        step = max(1, int(len(mids_sel) / max(1, max_labels)))
+        for i, (xi, mid) in enumerate(zip(x, mids_sel)):
+            if i % step == 0:
+                ax_bot.text(xi, ax_bot.get_ylim()[0] + 0.02*(ax_bot.get_ylim()[1]-ax_bot.get_ylim()[0]), mid, rotation=90, fontsize=6, ha='center')
+
+    # Save
+    if output_path is None:
+        fname = f"validation_ind_{individual.individual_id}_chr{chrom_key}.png"
+        output_path = os.path.join(".", fname)
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close(fig)
+    print(f"[Validation] Plot saved: {output_path}")
+
+from typing import List, Dict, Any, Optional
+
+# NOTE: Assuming RecombinationSimulator has a method to retrieve individuals
+# E.g., simulator.get_individual(individual_id) 
+
+def validate_chromosome_visual(
+    ancestry_file: str,
+    marker_map: List[Dict[str, Any]],
+    simulator: 'RecombinationSimulator',
+    output_dir: str,
+    chrom: int = 1,
+    individual_id: Optional[str] = None,
+    zoom_bp: Optional[tuple] = None,
+    show_marker_labels: bool = False
+):
+    """
+    High level function: reads ancestry_file CSV and calls plot_individual_chromosome.
+    If individual_id is None, picks first individual found in the ancestry file.
+    It now attempts to retrieve the individual object directly from the simulator.
+    """
+    
+    # 1. Load Ancestry Data
+    if not os.path.exists(ancestry_file):
+        print("[Validation] No ancestry block file found.")
+        return
+
+    try:
+        df = pd.read_csv(ancestry_file)
+    except Exception as e:
+        print(f"[Validation] Error reading ancestry file: {e}")
+        return
+
+    if df.empty:
+        print("[Validation] Ancestry file is empty.")
+        return
+        
+    if individual_id is None:
+        # Pick first individual found in the CSV
+        individual_id = df["individual_id"].iloc[0]
+
+    # 2. Find the Individual Object (Optimized Lookup)
+    
+    # Assume the simulator object has a robust method to retrieve the individual
+    # This replaces the unreliable 'globals()' search.
+    try:
+        # NOTE: You must implement a get_individual method in RecombinationSimulator
+        if hasattr(simulator, 'get_individual'):
+            individual_obj = simulator.get_individual(individual_id)
+        else:
+            # Fallback for simulators without the method
+            individual_obj = None 
+            print("[Validation] Simulator missing 'get_individual' method. Cannot retrieve object.")
+            
+    except Exception as e:
+        print(f"[Validation] Error retrieving individual '{individual_id}' from simulator: {e}")
+        individual_obj = None
+
+    if individual_obj is None:
+        # We need the live object for full haplotype comparison
+        print(f"[Validation] Could not retrieve Individual object '{individual_id}' from the simulator. Skipping plot.")
+        return
+
+    # 3. Generate Plot
+    
+    ancestry_df = df  # Use the loaded DataFrame
+    
+    # Create output path
+    outpath = os.path.join(output_dir, f"validation_ind{individual_id}_chr{chrom}.png")
+    
+    print(f"[Validation] Plotting chromosome {chrom} for individual {individual_id}...")
+    
+    # Call the plotting function
+    plot_individual_chromosome(
+        individual=individual_obj,
+        simulator=simulator,
+        chrom=chrom,
+        ancestry_blocks_df=ancestry_df,
+        output_path=outpath,
+        zoom_bp=zoom_bp,
+        show_marker_labels=show_marker_labels
+    )
+    
+    print(f"[Validation] Plot saved to: {outpath}")
+
 # MAIN RUN
 if __name__ == "__main__":
 
@@ -2365,7 +2599,7 @@ if __name__ == "__main__":
     )
     input_options.add_argument(
         "-mf", "--map-file", type=str,
-        help="CSV file containing the marker map (chr + base_pair)."
+        help="CSV file containing the marker map (chromosome + base_pair)."
     )
 
     # --- GENERAL SIMULATION PARAMETERS ---
@@ -2436,208 +2670,246 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+# ===========================================================================================
+#   START OF SIMULATION EXECUTION BLOCK
+# ===========================================================================================
 
-    # ===========================================================================================
-    #   START OF SIMULATION EXECUTION BLOCK
-    # ===========================================================================================
+print(f"\nStarting Simulation Replicate {args.replicate_id}")
 
-    print(f"\nStarting Simulation Replicate {args.replicate_id}")
+# Seed handling
+current_seed = args.seed if args.seed is not None else int(time.time()) + args.replicate_id
+print(f"Setting random seed to: {current_seed}")
+random.seed(current_seed)
+np.random.seed(current_seed)
 
-    # Seed handling
-    current_seed = args.seed if args.seed is not None else int(time.time()) + args.replicate_id
-    print(f"Setting random seed to: {current_seed}")
-    random.seed(current_seed)
-    np.random.seed(current_seed)
+# Apply replicate ID to output naming early
+original_output_name = args.output_name
+args.output_name = f"{original_output_name}_rep_{args.replicate_id}"
+print(f"Setting output prefix to: {args.output_name}")
 
-    # Apply replicate ID to output naming early
-    original_output_name = args.output_name
-    args.output_name = f"{original_output_name}_rep_{args.replicate_id}"
-    print(f"Setting output prefix to: {args.output_name}")
+# ===========================================================================================
+#   LOAD / CREATE MARKER MAP
+# ===========================================================================================
 
-    # ===========================================================================================
-    #   LOAD / CREATE MARKER MAP
-    # ===========================================================================================
+known_markers_data = []
+num_pop0_synthetic = args.num_pop0
 
-    known_markers_data = []
-    num_pop0_synthetic = args.num_pop0
+# ------------------------------------------------------------
+# CASE 1 — GENOTYPE FILE MODE
+# ------------------------------------------------------------
+if args.genotype_file:
+    print("\nFile Input Mode Detected (Genotype File Provided).")
 
-    # ------------------------------------------------------------
-    # CASE 1 — GENOTYPE FILE MODE
-    # ------------------------------------------------------------
-    if args.genotype_file:
-        print("\nFile Input Mode Detected (Genotype File Provided).")
+    if args.map_file:
+        print("Loading Marker Map from file...")
+        try:
+            known_markers_data = read_marker_map(args.map_file, args)
+        except Exception as e:
+            print(f"Error reading map file {args.map_file}: {e}")
+            exit(1)
 
-        # If a map file was provided
-        if args.map_file:
-            print("Loading Marker Map from file...")
-            try:
-                known_markers_data = read_marker_map(args.map_file, args)
-            except Exception as e:
-                print(f"Error reading map file {args.map_file}: {e}")
-                exit(1)
-
-        # No map → build synthetic map from genotype file header
-        else:
-            print("Warning: No map file provided. Creating synthetic map from genotype file header.")
-            try:
-                actual_marker_ids = get_marker_ids_from_genotype_file(args.genotype_file)
-            except Exception as e:
-                print(f"Error: cannot read genotype file to build map: {e}")
-                exit(1)
-
-            known_markers_data = create_default_markers_map_only(
-                args=args,
-                marker_ids=actual_marker_ids,
-                n_markers=len(actual_marker_ids),
-                n_chromosomes=args.num_chrs,
-            )
-
-            print(f"Generated synthetic map with {len(known_markers_data)} markers.")
-
-    # ------------------------------------------------------------
-    # CASE 2 — FULL SYNTHETIC MODE
-    # ------------------------------------------------------------
     else:
-        print("\nRunning in FULL Synthetic Mode (No files provided).")
+        print("Warning: No map file provided. Creating synthetic map from genotype file header.")
 
         try:
-            md_probs = parse_list_or_value(args.missing_data, args.num_marker)
-        except ValueError as e:
-            print(f"Error with synthetic parameters: {e}")
+            actual_marker_ids = get_marker_ids_from_genotype_file(args.genotype_file)
+        except Exception as e:
+            print(f"Error: cannot read genotype file to build map: {e}")
             exit(1)
+
+        # Remove non-marker columns
+        non_marker_cols = {"PlantID", "RametIDs", "family", "ramet", "id"}
+        filtered_marker_ids = [c for c in actual_marker_ids if c not in non_marker_cols]
+
+        if len(filtered_marker_ids) != len(actual_marker_ids):
+            removed = set(actual_marker_ids) - set(filtered_marker_ids)
+            print("Removed non-marker columns:", removed)
+
+        actual_marker_ids = filtered_marker_ids
 
         known_markers_data = create_default_markers_map_only(
             args=args,
-            n_markers=args.num_marker,
+            marker_ids=actual_marker_ids,
+            n_markers=len(actual_marker_ids),
             n_chromosomes=args.num_chrs,
-            md_prob=md_probs,
         )
 
-    print(f"Loaded/Generated raw map for {len(known_markers_data)} markers.")
+        print(f"Generated synthetic map with {len(known_markers_data)} markers.")
 
-    # ===========================================================================================
-    #   NEW: BUILD COMPLETE MAP AND VALIDATE (THIS IS THE CORRECT LOCATION)
-    # ===========================================================================================
+# ------------------------------------------------------------
+# CASE 2 — FULL SYNTHETIC MODE
+# ------------------------------------------------------------
+else:
+    print("\nRunning in FULL Synthetic Mode (No files provided).")
 
     try:
-        known_markers_data = build_complete_marker_map(known_markers_data, args)
-        validate_marker_map(known_markers_data)
-    except Exception as e:
-        print(f"Error building/validating complete marker map: {e}")
-        exit(1)
-
-    print(f"Loaded/Generated and validated complete map for {len(known_markers_data)} markers.")
-
-    # ===========================================================================================
-    #   CREATE P0 POPULATION
-    # ===========================================================================================
-
-    recomb_simulator = RecombinationSimulator(
-        known_markers_data=known_markers_data,
-        num_chromosomes=args.num_chrs
-    )
-
-    print("\nCreating initial population (P0)")
-
-    if args.genotype_file:
-        p0_pop = load_p0_population_from_genotypes_final(
-            args.genotype_file,
-            known_markers_data,
-        )
-        print(f"Loaded {len(p0_pop.individuals)} individuals into P0.")
-    else:
-        p0_pop = create_ancestral_population(
-            recomb_simulator,
-            num_pop0_synthetic,
-            known_markers_data,
-            "P0"
-        )
-        print(f"Generated synthetic P0 of size {num_pop0_synthetic}.")
-
-    # ===========================================================================================
-    #   EXPORT FOUNDERS GENOTYPES
-    # ===========================================================================================
-
-    parent_genotypes_dir = os.path.join(args.output_dir, "results")
-    os.makedirs(parent_genotypes_dir, exist_ok=True)
-
-    founder_genotypes = []
-    for ind in p0_pop.individuals.values():
-        founder_genotypes.extend(recomb_simulator.get_genotypes(ind))
-
-    df_genotypes = pd.DataFrame(founder_genotypes)
-    output_file = os.path.join(parent_genotypes_dir, f"P0_genotypes_{args.output_name}.csv")
-    df_genotypes.to_csv(output_file, index=False)
-    print(f"\nP0 genotype data exported to {output_file}")
-
-    # ===========================================================================================
-    #   INITIAL HI/HET CALCULATION
-    # ===========================================================================================
-
-    initial_hi_het_data = {}
-    for ind in p0_pop.individuals.values():
-        hi, het = recomb_simulator.calculate_hi_het(ind)
-        initial_hi_het_data[ind.individual_id] = {"HI": hi, "HET": het}
-
-    # ===========================================================================================
-    #   PARSE DISTRIBUTIONS
-    # ===========================================================================================
-
-    try:
-        crossover_dist = _parse_crossover_distribution(args.crossover_dist)
-        number_offspring = _parse_crossover_distribution(args.num_offspring)
+        md_probs = parse_list_or_value(args.missing_data, args.num_marker)
     except ValueError as e:
-        print(f"Error parsing distributions: {e}")
+        print(f"Error with synthetic parameters: {e}")
         exit(1)
 
-    print(f"Crossover distribution: {crossover_dist}")
-    print(f"Offspring distribution: {number_offspring}")
-
-    # ===========================================================================================
-    #   BUILD CROSSING PLAN
-    # ===========================================================================================
-
-    print("Building crossing plan")
-
-    crossing_plan = []
-    if args.num_pn_generations > 0:
-        crossing_plan = build_panmictic_plan(
-            num_generations=args.num_pn_generations,
-            target_pop_size=args.target_pop_size
-        )
-
-    # ===========================================================================================
-    #   RUN SIMULATION
-    # ===========================================================================================
-
-    print("Starting simulation")
-    start_time = time.time()
-
-    populations_dict, hi_het_data = simulate_generations(
-        simulator=recomb_simulator,
-        initial_pop=p0_pop,
-        crossing_plan=crossing_plan,
-        number_offspring=number_offspring,
-        crossover_dist=crossover_dist,
-        track_ancestry=args.pedigree_recording,
-        track_blocks=args.track_blocks,
-        track_junctions=args.track_junctions,
-        output_locus=args.output_locus,
-        verbose=True,
-        args=args
+    known_markers_data = create_default_markers_map_only(
+        args=args,
+        n_markers=args.num_marker,
+        n_chromosomes=args.num_chrs,
+        md_prob=md_probs,
     )
 
-    elapsed = time.time() - start_time
-    print(f"\nSimulation {args.replicate_id} complete. Runtime: {elapsed:.2f} sec")
+print(f"Loaded/Generated raw map for {len(known_markers_data)} markers.")
 
-    # ===========================================================================================
-    #   OUTPUT HANDLING
-    # ===========================================================================================
+# ===========================================================================================
+#   BUILD COMPLETE MAP + VALIDATE
+# ===========================================================================================
+try:
+    known_markers_data = build_complete_marker_map(known_markers_data, args)
+    validate_marker_map(known_markers_data)
+except Exception as e:
+    print(f"Error building/validating complete marker map: {e}")
+    exit(1)
 
-    all_hi_het_data = {**initial_hi_het_data, **hi_het_data}
-    handle_outputs(args, all_hi_het_data)
+print(f"Loaded/Generated and validated complete map for {len(known_markers_data)} markers.")
 
-    # Reset output name if main called in a loop
-    args.output_name = original_output_name
+# ===========================================================================================
+#   REORDER MARKER MAP TO MATCH GENOTYPE FILE
+# ===========================================================================================
+if args.genotype_file:
+    print("\nReordering marker map to match genotype file order...")
 
-    print(f"Finished Simulation Replicate {args.replicate_id}")
+    header_marker_ids = get_marker_ids_from_genotype_file(args.genotype_file)
+    marker_dict_by_id = {m["marker_id"]: m for m in known_markers_data}
+
+    reordered = []
+    missing_from_map = []
+    missing_from_geno = []
+
+    for mid in header_marker_ids:
+        if mid in marker_dict_by_id:
+            reordered.append(marker_dict_by_id[mid])
+        else:
+            missing_from_map.append(mid)
+
+    genotype_marker_set = set(header_marker_ids)
+    for mid in marker_dict_by_id:
+        if mid not in genotype_marker_set:
+            missing_from_geno.append(mid)
+
+    print("\nMissing from MAP:", missing_from_map if missing_from_map else "None")
+    print("Missing from GENOTYPE:", missing_from_geno if missing_from_geno else "None")
+
+    known_markers_data = reordered
+    print(f"Final marker count after reordering: {len(known_markers_data)}")
+
+# ===========================================================================================
+#   CREATE P0 POPULATION
+# ===========================================================================================
+
+recomb_simulator = RecombinationSimulator(
+    known_markers_data=known_markers_data,
+    num_chromosomes=args.num_chrs
+)
+
+print("\nCreating initial population (P0)")
+
+if args.genotype_file:
+    p0_pop = load_p0_population_from_genotypes_final(
+        args.genotype_file,
+        known_markers_data,
+    )
+    print(f"Loaded {len(p0_pop.individuals)} individuals into P0.")
+else:
+    p0_pop = create_ancestral_population(
+        recomb_simulator,
+        num_pop0_synthetic,
+        known_markers_data,
+        "P0"
+    )
+    print(f"Generated synthetic P0 of size {num_pop0_synthetic}.")
+
+# ===========================================================================================
+#   INITIAL HI/HET CALCULATION
+# ===========================================================================================
+initial_hi_het_data = {}
+for ind in p0_pop.individuals.values():
+    hi, het = recomb_simulator.calculate_hi_het(ind)
+    initial_hi_het_data[ind.individual_id] = {"HI": hi, "HET": het}
+
+# ===========================================================================================
+#   PARSE DISTRIBUTIONS
+# ===========================================================================================
+try:
+    crossover_dist = _parse_crossover_distribution(args.crossover_dist)
+    number_offspring = _parse_crossover_distribution(args.num_offspring)
+except ValueError as e:
+    print(f"Error parsing distributions: {e}")
+    exit(1)
+
+print(f"Crossover distribution: {crossover_dist}")
+print(f"Offspring distribution: {number_offspring}")
+
+# ===========================================================================================
+#   BUILD CROSSING PLAN
+# ===========================================================================================
+print("Building crossing plan")
+
+crossing_plan = []
+if args.num_pn_generations > 0:
+    crossing_plan = build_panmictic_plan(
+        num_generations=args.num_pn_generations,
+        target_pop_size=args.target_pop_size
+    )
+
+# ===========================================================================================
+#   RUN SIMULATION
+# ===========================================================================================
+print("Starting simulation")
+start_time = time.time()
+
+populations_dict, hi_het_data = simulate_generations(
+    simulator=recomb_simulator,
+    initial_pop=p0_pop,
+    crossing_plan=crossing_plan,
+    number_offspring=number_offspring,
+    crossover_dist=crossover_dist,
+    track_ancestry=args.pedigree_recording,
+    track_blocks=args.track_blocks,
+    track_junctions=args.track_junctions,
+    output_locus=args.output_locus,
+    verbose=True,
+    args=args
+)
+
+elapsed = time.time() - start_time
+print(f"\nSimulation {args.replicate_id} complete. Runtime: {elapsed:.2f} sec")
+
+# ===========================================================================================
+#   OUTPUT HANDLING
+# ===========================================================================================
+all_hi_het_data = {**initial_hi_het_data, **hi_het_data}
+handle_outputs(args, all_hi_het_data)
+
+# ===========================================================================================
+#   VALIDATION PLOT (NEW)
+# ===========================================================================================
+try:
+    ancestry_file = os.path.join(
+        args.output_dir, "results",
+        f"{args.output_name}_ancestry_blocks.csv"
+    )
+
+    validate_chromosome_visual(
+        ancestry_file=ancestry_file,
+        marker_map=known_markers_data,
+        simulator='RecombinationSimulator',
+        output_dir=os.path.join(args.output_dir, "results"),
+        chrom=1,              # choose chromosome
+        individual_id=None    # auto-select first individual
+    )
+
+except Exception as e:
+    print(f"[Validation] Could not generate chromosome validation plot: {e}")
+
+# ===========================================================================================
+#   FINISH
+# ===========================================================================================
+args.output_name = original_output_name
+print(f"Finished Simulation Replicate {args.replicate_id}")
