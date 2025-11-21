@@ -2106,7 +2106,7 @@ def plot_pedigree_visual(ancestry_data_df, start_individual_id, output_path):
     plt.close()
 
 def plot_chromosome_ancestry(
-    locus_genotype_df,
+    p0_genotype_df,
     marker_map_df,
     target_individual,
     target_chr,
@@ -2120,17 +2120,13 @@ def plot_chromosome_ancestry(
     - Removes duplicate marker_index entries
     """
 
-    import numpy as np
-    import pandas as pd
-    import matplotlib.pyplot as plt
-
     # ------------------------------
     # 1. Filter map for chromosome
     # ------------------------------
     map_chr = marker_map_df[marker_map_df["chromosome"] == target_chr].copy()
 
     if map_chr.empty:
-        print(f"❌ No markers found for chromosome {target_chr}")
+        print(f" No markers found for chromosome {target_chr}")
         return
 
     # Ensure marker_index exists
@@ -2149,7 +2145,7 @@ def plot_chromosome_ancestry(
             break
 
     if pos_col is None:
-        print("❌ No usable position column found in map.")
+        print(" No usable position column found in map.")
         print("Available columns:", list(map_chr.columns))
         return
 
@@ -2165,13 +2161,13 @@ def plot_chromosome_ancestry(
     # ------------------------------
     # 3. Filter genotype for target individual + chr
     # ------------------------------
-    gen_df = locus_genotype_df[
-        (locus_genotype_df["individual_id"] == target_individual) &
-        (locus_genotype_df["chromosome"] == target_chr)
+    gen_df = p0_genotype_df[
+        (p0_genotype_df["individual_id"] == target_individual) &
+        (p0_genotype_df["chromosome"] == target_chr)
     ].copy()
 
     if gen_df.empty:
-        print(f"❌ No genotype data for {target_individual} chr {target_chr}")
+        print(f"No genotype data for {target_individual} chr {target_chr}")
         return
 
     # Ensure marker_index valid
@@ -2195,7 +2191,7 @@ def plot_chromosome_ancestry(
     hapB_col = next((c for c in hap_cols_B if c in gen_df.columns), None)
 
     if hapA_col is None or hapB_col is None:
-        print("❌ Haplotype columns not found. Available columns:", gen_df.columns.tolist())
+        print("Haplotype columns not found. Available columns:", gen_df.columns.tolist())
         return
 
     # ------------------------------
@@ -2205,7 +2201,7 @@ def plot_chromosome_ancestry(
     gen_df = gen_df.drop_duplicates(subset=["marker_index"], keep="first")
     after = len(gen_df)
     if after != before:
-        print(f"⚠ Removed {before - after} duplicate genotype rows.")
+        print(f"Removed {before - after} duplicate genotype rows.")
 
     # Align genotype rows in map order
     gen_df = gen_df.set_index("marker_index").reindex(marker_indices)
@@ -2359,71 +2355,6 @@ def plot_full_pedigree(ancestry_data_df, output_path):
     plt.savefig(output_path, bbox_inches="tight")
     plt.close()
 
-def _find_haplotype_blocks(haplotype_data: np.ndarray, positions: np.ndarray):
-    """
-    Converts a haplotype ancestry vector into contiguous blocks.
-    
-    RETURNS a list of tuples:
-        (start_pos, length, ancestry_value)
-
-    This version is fully robust:
-    - Ensures haplotype_data and positions are same length
-    - Prevents index errors
-    - Forces haplotypes into valid integer ancestry states
-    - Skips zero-length blocks
-    """
-
-    # --- 1. Basic sanity checks ---
-    if haplotype_data is None or positions is None:
-        return []
-
-    haplotype_data = np.asarray(haplotype_data)
-    positions = np.asarray(positions)
-
-    n = len(haplotype_data)
-    m = len(positions)
-
-    if n == 0 or m == 0:
-        return []
-
-    # Force equal length by truncation to the shortest valid range
-    L = min(n, m)
-    hap = haplotype_data[:L]
-    pos = positions[:L]
-
-    # --- 2. Ensure ancestry states are valid integers ---
-    # Convert non-numeric or NaN ancestry to missing (-1)
-    hap = pd.to_numeric(hap, errors='coerce').fillna(-1).astype(int).values
-
-    # --- 3. Build contiguous haplotype blocks ---
-    blocks = []
-    current_ancestry = hap[0]
-    block_start_index = 0
-
-    for i in range(1, L):
-        if hap[i] != current_ancestry:
-            # Block ends
-            start_bp = pos[block_start_index]
-            end_bp = pos[i - 1]
-            length = max(0, end_bp - start_bp)
-
-            if length > 0:
-                blocks.append((start_bp, length, current_ancestry))
-
-            # Start new block
-            current_ancestry = hap[i]
-            block_start_index = i
-
-    # --- 4. Add final block ---
-    start_bp = pos[block_start_index]
-    end_bp = pos[L - 1]
-    length = max(0, end_bp - start_bp)
-
-    if length > 0:
-        blocks.append((start_bp, length, current_ancestry))
-
-    return blocks
-
 def get_position_column(df):
     """
     Select the best marker position column in priority order:
@@ -2448,7 +2379,7 @@ def get_position_column(df):
 
     return None
 
-def handle_outputs(args, hi_het_data, locus_genotype_data_df=None):
+def handle_outputs(args, hi_het_data, p0_genotype_df=None):
     """
     Handles all output file generation based on command-line flags.
     Reads data from files generated during the simulation and produces plots.
@@ -2692,9 +2623,6 @@ print(f"\nStarting Simulation Replicate {args.replicate_id}")
 # Seed handling
 current_seed = args.seed if args.seed is not None else int(time.time()) + args.replicate_id
 print(f"Setting random seed to: {current_seed}")
-import random # Ensure random is imported if not already
-import numpy as np # Ensure numpy is imported if not already
-import time # Ensure time is imported if not already
 random.seed(current_seed)
 np.random.seed(current_seed)
 
@@ -2716,48 +2644,21 @@ num_pop0_synthetic = args.num_pop0
 if args.genotype_file:
     print("\nFile Input Mode Detected (Genotype File Provided).")
 
-    if args.map_file:
-        print("Loading Marker Map from file...")
-        try:
-            known_markers_data = read_marker_map(args.map_file, args)
-        except Exception as e:
-            print(f"Error reading map file {args.map_file}: {e}")
-            exit(1)
+    # Step 1: Read the genotype CSV from the command line
+    df = pd.read_csv(args.genotype_file)
 
-    else:
-        print("Warning: No map file provided. Creating synthetic map from genotype file header.")
+    # Step 4: Load P0 population using the long-format file
+    # Keep the genotype file in wide format (columns = markers)
+    p0_pop = load_p0_population_from_genotypes_final(
+        args.genotype_file,
+        known_markers_data
+    )
 
-        try:
-            actual_marker_ids = get_marker_ids_from_genotype_file(args.genotype_file)
-        except Exception as e:
-            print(f"Error: cannot read genotype file to build map: {e}")
-            exit(1)
+    print(f"Loaded {len(p0_pop.individuals)} individuals into P0.")
 
-        # Remove non-marker columns
-        non_marker_cols = {"PlantID", "RametIDs", "family", "ramet", "id"}
-        filtered_marker_ids = [c for c in actual_marker_ids if c not in non_marker_cols]
-
-        if len(filtered_marker_ids) != len(actual_marker_ids):
-            removed = set(actual_marker_ids) - set(filtered_marker_ids)
-            print("Removed non-marker columns:", removed)
-
-        actual_marker_ids = filtered_marker_ids
-
-        known_markers_data = create_default_markers_map_only(
-            args=args,
-            marker_ids=actual_marker_ids,
-            n_markers=len(actual_marker_ids),
-            n_chromosomes=args.num_chrs,
-        )
-
-        print(f"Generated synthetic map with {len(known_markers_data)} markers.")
-
-# ------------------------------------------------------------
-# CASE 2 — FULL SYNTHETIC MODE
-# ------------------------------------------------------------
 else:
+    # Existing synthetic P0 generation
     print("\nRunning in FULL Synthetic Mode (No files provided).")
-
     try:
         md_probs = parse_list_or_value(args.missing_data, args.num_marker)
     except ValueError as e:
@@ -2770,8 +2671,7 @@ else:
         n_chromosomes=args.num_chrs,
         md_prob=md_probs,
     )
-
-print(f"Loaded/Generated raw map for {len(known_markers_data)} markers.")
+    print(f"Loaded/Generated raw map for {len(known_markers_data)} markers.")
 
 # ===========================================================================================
 #   REORDER MARKER MAP TO MATCH GENOTYPE FILE
@@ -2779,7 +2679,8 @@ print(f"Loaded/Generated raw map for {len(known_markers_data)} markers.")
 if args.genotype_file:
     print("\nReordering marker map to match genotype file order...")
 
-    header_marker_ids = get_marker_ids_from_genotype_file(args.genotype_file)
+    # Extract header markers from wide-format genotype CSV
+    header_marker_ids = [col for col in df.columns if col not in ["PlantID", "RametIDs"]]
     marker_dict_by_id = {m["marker_id"]: m for m in known_markers_data}
 
     reordered = []
@@ -2804,9 +2705,8 @@ if args.genotype_file:
     print(f"Final marker count after reordering: {len(known_markers_data)}")
 
 # ===========================================================================================
-#   CREATE P0 POPULATION
+#   CREATE P0 POPULATION (ALREADY DONE ABOVE)
 # ===========================================================================================
-
 recomb_simulator = RecombinationSimulator(
     known_markers_data=known_markers_data,
     num_chromosomes=args.num_chrs,
@@ -2816,13 +2716,8 @@ recomb_simulator = RecombinationSimulator(
 
 print("\nCreating initial population (P0)")
 
-if args.genotype_file:
-    p0_pop = load_p0_population_from_genotypes_final(
-        args.genotype_file,
-        known_markers_data,
-    )
-    print(f"Loaded {len(p0_pop.individuals)} individuals into P0.")
-else:
+# P0 population already loaded for genotype file, or create synthetic if not
+if not args.genotype_file:
     p0_pop = create_ancestral_population(
         recomb_simulator,
         num_pop0_synthetic,
@@ -2840,119 +2735,55 @@ for ind in p0_pop.individuals.values():
     initial_hi_het_data[ind.individual_id] = {"HI": hi, "HET": het}
 
 # ===========================================================================================
-#   PARSE DISTRIBUTIONS
-# ===========================================================================================
-try:
-    crossover_dist = _parse_crossover_distribution(args.crossover_dist)
-    number_offspring = _parse_crossover_distribution(args.num_offspring)
-except ValueError as e:
-    print(f"Error parsing distributions: {e}")
-    exit(1)
-
-print(f"Crossover distribution: {crossover_dist}")
-print(f"Offspring distribution: {number_offspring}")
-
-# ===========================================================================================
-#   BUILD CROSSING PLAN
-# ===========================================================================================
-print("Building crossing plan")
-
-crossing_plan = []
-if args.num_pn_generations > 0:
-    crossing_plan = build_panmictic_plan(
-        num_generations=args.num_pn_generations,
-        target_pop_size=args.target_pop_size
-    )
-
-# ===========================================================================================
-#   RUN SIMULATION
-# ===========================================================================================
-print("Starting simulation")
-start_time = time.time()
-
-populations_dict, hi_het_data = simulate_generations(
-    simulator=recomb_simulator,
-    initial_pop=p0_pop,
-    crossing_plan=crossing_plan,
-    number_offspring=number_offspring,
-    crossover_dist=crossover_dist,
-    track_ancestry=args.pedigree_recording,
-    track_blocks=args.track_blocks,
-    track_junctions=args.track_junctions,
-    output_locus=args.output_locus,
-    verbose=True,
-    args=args
-)
-
-recomb_simulator.populations_dict = populations_dict
-
-elapsed = time.time() - start_time
-print(f"\nSimulation {args.replicate_id} complete. Runtime: {elapsed:.2f} sec")
-
-# ===========================================================================================
-#   COMPILATION AND VISUALIZATION BLOCK (FIXED)
+#   COMPILE GENOTYPE DATA FOR VISUALIZATION
 # ===========================================================================================
 import pandas as pd 
 
-# --- 1. COMPILE GENOTYPE DATA (The missing, critical step!) ---
 print("Compiling locus genotype data for visualization and output...")
 try:
-    # NOTE: **YOU MUST CHANGE THIS FUNCTION NAME** if 'compile_locus_data_to_df' is not correct.
-    # This line defines the variable that was missing!
-    locus_genotype_data_df = compile_locus_data_to_df(recomb_simulator.populations_dict)
+    # Compile population dictionary to a DataFrame for downstream plotting
+    p0_genotype_df = compile_locus_data_to_df(recomb_simulator.populations_dict)
 except NameError as e:
-    print(f"FATAL ERROR: Compilation function not found. Please check your utilities for the function that compiles populations_dict. Error: {e}")
+    print(f"FATAL ERROR: Compilation function not found. Error: {e}")
     exit(1)
 
-# --- 2. PREPARE MAP DATA (Converts the known list to the required DataFrame) ---
+# Prepare map DataFrame
 marker_map_data_df = pd.DataFrame(known_markers_data)
-
-# >>> INSERT THIS FIX: Create the 'marker_index' column <<<
-# The marker index is the implicit row index of the full list of markers.
 marker_map_data_df['marker_index'] = marker_map_data_df.index.to_numpy()
 print("Added 'marker_index' column to map data for alignment with locus data.")
-# >>> END OF FIX <<<
 
-# >>> THE FIX: Rename 'cM_pos' to 'position' <<<
-# The plotting function expects 'position', but the header shows 'cM_pos'.
-COLUMN_TO_RENAME = 'cM_pos'
-
-if COLUMN_TO_RENAME in marker_map_data_df.columns:
-    marker_map_data_df = marker_map_data_df.rename(columns={COLUMN_TO_RENAME: 'position'})
-    print(f"Renamed map column '{COLUMN_TO_RENAME}' to 'position' for plotting.")
+# Ensure plotting column exists
+if 'cM_pos' in marker_map_data_df.columns:
+    marker_map_data_df = marker_map_data_df.rename(columns={'cM_pos': 'position'})
+    print("Renamed 'cM_pos' to 'position' for plotting.")
+elif 'base_pair' in marker_map_data_df.columns:
+    marker_map_data_df = marker_map_data_df.rename(columns={'base_pair': 'position'})
+    print("Warning: 'cM_pos' not found. Using 'base_pair' as 'position'.")
 else:
-    # This acts as a safety check if your known_markers_data is missing the column
-    # Fallback to base_pair if cM_pos is somehow missing.
-    if 'base_pair' in marker_map_data_df.columns:
-        marker_map_data_df = marker_map_data_df.rename(columns={'base_pair': 'position'})
-        print("Warning: 'cM_pos' not found. Falling back to 'base_pair' and renaming to 'position'.")
-    else:
-        raise ValueError("Marker map data must contain 'cM_pos' or 'base_pair' columns for plotting.")
-# >>> END OF FIX <<<
+    raise ValueError("Marker map must contain 'cM_pos' or 'base_pair' for plotting.")
 
-# --- 3. Save the Locus Data (This writes the CSV that handle_outputs reads) ---
+# ===========================================================================================
+#   SAVE Locus Genotype Data
+# ===========================================================================================
 if args.output_locus:
     output_dir = os.path.join(args.output_dir, "results")
-    output_path_prefix = os.path.join(output_dir, args.output_name)
-    locus_csv = output_path_prefix + "_locus_genotype_data.csv"
-    locus_genotype_data_df.to_csv(locus_csv, index=False)
+    os.makedirs(output_dir, exist_ok=True)
+    locus_csv = os.path.join(output_dir, f"{args.output_name}_locus_genotype_data.csv")
+    p0_genotype_df.to_csv(locus_csv, index=False)
     print(f"Locus genotype data saved to: {locus_csv}")
 
-# --- 4. Specify which individual and chromosome to visualize ---
+# ===========================================================================================
+#   VISUALIZATION
+# ===========================================================================================
 TARGET_INDIVIDUAL_ID = "P1_1"
 TARGET_CHROMOSOME = 1
 
-print("\n=== DEBUG: Map columns before plotting ===")
-print(marker_map_data_df.columns)
-print(marker_map_data_df.head())
-
-# --- 5. Call the new visualization function ---
 print(f"Generating ancestry visualization for Individual {TARGET_INDIVIDUAL_ID} on Chromosome {TARGET_CHROMOSOME}...")
 plot_chromosome_ancestry(
-    locus_genotype_data_df,  # Now defined!
-    marker_map_data_df,      # Now defined!
-    TARGET_INDIVIDUAL_ID, 
-    TARGET_CHROMOSOME, 
+    p0_genotype_df,
+    marker_map_data_df,
+    TARGET_INDIVIDUAL_ID,
+    TARGET_CHROMOSOME,
     f"simulation_outputs/results/ancestry_track_chr{TARGET_CHROMOSOME}_{TARGET_INDIVIDUAL_ID}_{args.output_name}.png"
 )
 
@@ -2960,13 +2791,6 @@ plot_chromosome_ancestry(
 #   OUTPUT HANDLING
 # ===========================================================================================
 all_hi_het_data = {**initial_hi_het_data, **hi_het_data}
+handle_outputs(args, all_hi_het_data, p0_genotype_df)
 
-# NOTE: The handle_outputs call must be updated to pass the new DataFrame:
-# (You also need to update the definition of handle_outputs itself)
-handle_outputs(args, all_hi_het_data, locus_genotype_data_df) 
-
-# ===========================================================================================
-#   FINISH
-# ===========================================================================================
-args.output_name = original_output_name
 print(f"Finished Simulation Replicate {args.replicate_id}")
