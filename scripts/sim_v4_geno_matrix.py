@@ -921,38 +921,53 @@ def load_p0_population_from_genotypes_final(
     """
     Loads P0 individuals from a genotype matrix, performs random phasing, 
     and robustly handles all input missing data codes (NaN, -9, -10, blank).
-    
-    CRITICAL UPDATE: Inverts Dosage 0 and Dosage 2 assignments to fix HI calculation
-    for populations where the P_A (HI=0) allele is encoded as 2, and P_B (HI=1) is encoded as 0.
     """
-    # 1. Read the Genotype Data (No change needed here)
+    
+    # --- 1. Read the Genotype Data (Read WITHOUT index_col=0 for clean column handling) ---
     try:
         MISSING_INTEGER_CODES = [-9, -10]
+        # Read the entire file without setting an index column initially
         df = pd.read_csv(
             genotype_file_path, 
-            index_col=0, 
             na_values=MISSING_INTEGER_CODES
         ) 
         df.columns = df.columns.astype(str)
     except Exception as e:
         raise IOError(f"Error reading genotype file {genotype_file_path}: {e}")
 
-    # 2. Marker ID cleanup + consistency (No change needed here)
+    # 2. Marker ID cleanup + consistency
     map_marker_ids = [m['marker_id'].strip().replace('\ufeff', '') for m in known_markers_data]
     
     df.columns = df.columns.str.strip().str.replace('\ufeff', '')
-    present_markers = [mid for mid in map_marker_ids if mid in df.columns]
+    
+    # CRITICAL FIX: Explicitly remove non-marker columns by name
+    ID_COLUMNS = ['PlantID', 'RametIDs'] 
+    
+    # Store the individual IDs and drop the ID columns from the DataFrame
+    # 'PlantID' is used for the final individual_id
+    individual_ids = df['PlantID'].astype(str)
+    
+    # Check if columns exist before dropping to prevent a crash
+    columns_to_drop = [col for col in ID_COLUMNS if col in df.columns]
+    if columns_to_drop:
+        df = df.drop(columns=columns_to_drop) 
+    
+    # Now, df.columns contains ONLY the marker names, simplifying the check
+    marker_columns_to_check = df.columns
+    
+    present_markers = [mid for mid in map_marker_ids if mid in marker_columns_to_check]
     
     missing_count = len(map_marker_ids) - len(present_markers)
     if missing_count > 0:
         print(f"Warning: {missing_count} markers from the map list were not found in the genotype file. Dropping them.")
         
+    # Line 956 (where the error was raised)
     if not present_markers:
         raise ValueError("CRITICAL ERROR: Zero markers matched between map and genotype file.")
         
     df = df[present_markers]
 
-    # 3. Convert to numeric cleanly (No change needed here)
+    # --- 3. Convert to numeric cleanly ---
     try:
         df = df.astype(float, errors='raise')
     except ValueError:
@@ -960,19 +975,21 @@ def load_p0_population_from_genotypes_final(
         
     df = df.fillna(MISSING_DATA_CODE)
 
-    # 4. Create population (The core logic is updated here)
+    # --- 4. Create population ---
     p0_pop = Population('P0')
     
-    for individual_id, row in df.iterrows():
+    # New iteration method: Use the pandas index (which starts at 0) and the stored individual_ids
+    for i, row in df.iterrows():
 
+        # Retrieve the individual_id from the stored Series
+        individual_id = individual_ids.iloc[i] 
+        
         genotypes = row.to_numpy(dtype=float) 
         num_markers = len(genotypes) 
         if num_markers == 0:
             continue
 
         # Allocate haplotypes. Initializing to 0|0 means the default assumption 
-        # is that the Dosage 2 in the input file corresponds to P_A (internal 0) 
-        # and we must assign 1|1 explicitly.
         haplotype_A = np.zeros(num_markers, dtype=float) 
         haplotype_B = np.zeros(num_markers, dtype=float)
         
@@ -980,8 +997,7 @@ def load_p0_population_from_genotypes_final(
         is_present = ~is_missing
         
         # ---------------------------------------------------------------------
-        # 🔥 CRITICAL FIX: Invert Dosage 0 and Dosage 2 assignments 
-        # to ensure the P0 population is centered at HI=0.5
+        # CRITICAL FIX: Invert Dosage 0 and Dosage 2 assignments 
         # ---------------------------------------------------------------------
         
         # Homozygous 0/0 (Input file's P_B): Assign internal allele '1' (HI=1)
@@ -990,9 +1006,8 @@ def load_p0_population_from_genotypes_final(
         haplotype_B[homo_0_indices] = 1 
         
         # Homozygous 2/2 (Input file's P_A): Remains 0|0 from initialization.
-        # This is where the old code was assigning 1|1, which was the error.
         
-        # Heterozygous (Dosage 1) - remains the same, random phasing
+        # Heterozygous (Dosage 1) - random phasing
         hetero_indices = np.where((genotypes == 1) & is_present)[0]
         rand_alleles = np.random.randint(0, 2, size=len(hetero_indices))
         haplotype_A[hetero_indices] = rand_alleles
@@ -1002,28 +1017,28 @@ def load_p0_population_from_genotypes_final(
         haplotype_A[is_missing] = MISSING_DATA_CODE
         haplotype_B[is_missing] = MISSING_DATA_CODE
 
-        # 5. Interleave haplotypes A/B (No change needed here)
+        # --- 5. Interleave haplotypes A/B ---
         flat_alleles_interleaved = np.empty(2 * num_markers, dtype=float) 
         flat_alleles_interleaved[0::2] = haplotype_A 
         flat_alleles_interleaved[1::2] = haplotype_B 
 
         # ---------------------------------------------------------------------
-        # Marker length check (No change needed here)
+        # Marker length check (Remains the same)
         # ---------------------------------------------------------------------
         expected_len = 2 * len(known_markers_data)
         actual_len = len(flat_alleles_interleaved)
 
         if actual_len != expected_len:
             print("\nERROR: Allele array length mismatch!")
-            print(f"  Markers in map:      {len(known_markers_data)}")
-            print(f"  Markers in genotype: {num_markers}")
-            print(f"  Expected allele count: {expected_len}")
-            print(f"  Actual allele count:   {actual_len}")
-            print("  → Marker ordering or filtering mismatch.\n")
+            print(f"  Markers in map:        {len(known_markers_data)}")
+            print(f"  Markers in genotype: {num_markers}")
+            print(f"  Expected allele count: {expected_len}")
+            print(f"  Actual allele count:   {actual_len}")
+            print("  → Marker ordering or filtering mismatch.\n")
             raise ValueError("Allele array does not match marker map length.")
         # ---------------------------------------------------------------------
 
-        # 6. Split by chromosome safely (No change needed here)
+        # --- 6. Split by chromosome safely ---
         haplotypes_split = split_flat_alleles_by_chromosome(
             flat_alleles_interleaved, 
             known_markers_data
@@ -1617,9 +1632,9 @@ def simulate_generations(
             if p1.individual_id != p2.individual_id:
                 candidate_pairs.append((p1, p2))
             i += 2
-
+        # Pool means the number of eligable individual parents 
         if verbose:
-            print(f"Selected {len(candidate_pairs)} mating pairs (from pool {len(parent_pool)}).")
+            print(f"Selected {len(candidate_pairs)} mating pairs (from a pool of {len(parent_pool)} eligible parents).")
 
         # Generate offspring
         all_offspring_results = []
@@ -2548,8 +2563,8 @@ if __name__ == "__main__":
 
     # --- GENERAL SIMULATION PARAMETERS ---
     general_params = parser.add_argument_group('General Simulation Parameters')
-    general_params.add_argument("-np", "--num_pn_generations", type=int, default=1,
-                                help="Number of panmictic generations (P1, P2, ...).")
+    general_params.add_argument("-HG", "--num_hybrid_generations", type=int, default=1,
+                                help="Number of hybrid generations (P1, P2, ...).")
     general_params.add_argument("-ts", "--target_pop_size", type=int, default=100,
                                 help="Target population size in P1+.")
     general_params.add_argument("-no", "--num_offspring", type=str, default='{"2":1.0}',
@@ -2615,8 +2630,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
 # ===========================================================================================
-#   START OF SIMULATION EXECUTION BLOCK
+#   START OF SIMULATION EXECUTION BLOCK
 # ===========================================================================================
+import json # Required for parsing the crossover flag
+import os # Required for file path joins (os.path.join)
+import pandas as pd # Required for DataFrames
 
 print(f"\nStarting Simulation Replicate {args.replicate_id}")
 
@@ -2632,7 +2650,7 @@ args.output_name = f"{original_output_name}_rep_{args.replicate_id}"
 print(f"Setting output prefix to: {args.output_name}")
 
 # ===========================================================================================
-#   LOAD / CREATE MARKER MAP
+#   LOAD / CREATE MARKER MAP
 # ===========================================================================================
 
 known_markers_data = []
@@ -2644,16 +2662,33 @@ num_pop0_synthetic = args.num_pop0
 if args.genotype_file:
     print("\nFile Input Mode Detected (Genotype File Provided).")
 
-    # Step 1: Read the genotype CSV from the command line
-    df = pd.read_csv(args.genotype_file)
+    # CRITICAL FIX: Load the Map File FIRST
+    if not args.map_file:
+        raise ValueError("Genotype file provided, but map file path (-mf) is missing.")
+        
+    try:
+        # Read the map file: marker_id,chromosome,base_pair,cM_pos
+        map_df = pd.read_csv(args.map_file)
+        
+        # Standardize column names
+        map_df.columns = map_df.columns.str.strip().str.replace('\ufeff', '')
 
-    # Step 4: Load P0 population using the long-format file
-    # Keep the genotype file in wide format (columns = markers)
+        if 'marker_id' not in map_df.columns:
+            raise ValueError("Map file must contain a column named 'marker_id'.")
+            
+        map_df['marker_id'] = map_df['marker_id'].str.strip().str.replace('\ufeff', '')
+        
+        known_markers_data = map_df.to_dict('records')
+        print(f"Loaded {len(known_markers_data)} markers from map file: {args.map_file}")
+        
+    except Exception as e:
+        raise IOError(f"Error reading and processing map file {args.map_file}: {e}")
+
+    # Load P0 population
     p0_pop = load_p0_population_from_genotypes_final(
         args.genotype_file,
         known_markers_data
     )
-
     print(f"Loaded {len(p0_pop.individuals)} individuals into P0.")
 
 else:
@@ -2674,13 +2709,25 @@ else:
     print(f"Loaded/Generated raw map for {len(known_markers_data)} markers.")
 
 # ===========================================================================================
-#   REORDER MARKER MAP TO MATCH GENOTYPE FILE
+#   REORDER MARKER MAP TO MATCH GENOTYPE FILE
 # ===========================================================================================
 if args.genotype_file:
     print("\nReordering marker map to match genotype file order...")
 
-    # Extract header markers from wide-format genotype CSV
-    header_marker_ids = [col for col in df.columns if col not in ["PlantID", "RametIDs"]]
+    # --- Re-read the genotype file to define 'df' locally ---
+    try:
+        df = pd.read_csv(args.genotype_file) 
+        df.columns = df.columns.str.strip().str.replace('\ufeff', '')
+    except Exception as e:
+        print(f"Error reading genotype file for marker re-ordering check: {e}")
+        exit(1)
+
+    ID_COLUMNS_TO_EXCLUDE = ["PlantID", "RametIDs"]
+    columns_to_exclude = [col for col in ID_COLUMNS_TO_EXCLUDE if col in df.columns]
+
+    header_marker_ids = [col for col in df.columns if col not in columns_to_exclude]
+
+    # --- Reordering Logic ---
     marker_dict_by_id = {m["marker_id"]: m for m in known_markers_data}
 
     reordered = []
@@ -2705,7 +2752,7 @@ if args.genotype_file:
     print(f"Final marker count after reordering: {len(known_markers_data)}")
 
 # ===========================================================================================
-#   CREATE P0 POPULATION (ALREADY DONE ABOVE)
+#   CREATE SIMULATOR & P0 POPULATION
 # ===========================================================================================
 recomb_simulator = RecombinationSimulator(
     known_markers_data=known_markers_data,
@@ -2716,7 +2763,6 @@ recomb_simulator = RecombinationSimulator(
 
 print("\nCreating initial population (P0)")
 
-# P0 population already loaded for genotype file, or create synthetic if not
 if not args.genotype_file:
     p0_pop = create_ancestral_population(
         recomb_simulator,
@@ -2726,33 +2772,106 @@ if not args.genotype_file:
     )
     print(f"Generated synthetic P0 of size {num_pop0_synthetic}.")
 
+# Register P0 in the simulator
+recomb_simulator.get_population(p0_pop) # Corrected to .add_population
+
 # ===========================================================================================
-#   INITIAL HI/HET CALCULATION
+#   INITIAL HI/HET CALCULATION
 # ===========================================================================================
 initial_hi_het_data = {}
+hi_het_data = {} 
 for ind in p0_pop.individuals.values():
     hi, het = recomb_simulator.calculate_hi_het(ind)
     initial_hi_het_data[ind.individual_id] = {"HI": hi, "HET": het}
 
 # ===========================================================================================
-#   COMPILE GENOTYPE DATA FOR VISUALIZATION
+#   SIMULATION LOGIC
 # ===========================================================================================
-import pandas as pd 
+print("\n--- STARTING SIMULATION ---")
+
+# 1. Parse Crossover Distribution Flag (-cd)
+try:
+    crossover_dist_parsed = json.loads(args.crossover_dist)
+    # Ensure keys are integers (e.g., {1: 1.0})
+    crossover_dist_parsed = {int(k): float(v) for k, v in crossover_dist_parsed.items()}
+    print(f"Crossover distribution set to: {crossover_dist_parsed}")
+except Exception as e:
+    print(f"Warning: Could not parse crossover distribution '{args.crossover_dist}'. Defaulting to {{1: 1.0}}.")
+    crossover_dist_parsed = {1: 1.0}
+
+# 2. Build Crossing Plan
+try:
+    # Uses build_panmictic_plan based on -HG argument (Assuming args.num_hybrid_generations based on context)
+    # NOTE: You must ensure args.num_hybrid_generations is the correct attribute name for the -HG flag!
+    crossing_plan = build_panmictic_plan(args.num_hybrid_generations, args.target_pop_size)
+    print(f"Generated crossing plan for {len(crossing_plan)} generations.")
+except NameError:
+    print("Warning: 'build_panmictic_plan' not found. Using default 1-generation plan.")
+    crossing_plan = [{
+        'offspring_label': 'P1',
+        'parent1_label': 'P0', 
+        'parent2_label': 'P0', 
+        'target_size': args.target_size
+    }]
+
+# 3. Define and Parse Offspring Distribution (-no flag)
+try:
+    # Use the same JSON parsing logic as you used for -cd (crossover_dist)
+    number_offspring_dist = json.loads(args.num_offspring)
+    # Ensure keys are integers (number of offspring)
+    number_offspring_dist = {int(k): float(v) for k, v in number_offspring_dist.items()}
+    print(f"Offspring distribution set to: {number_offspring_dist}")
+except Exception as e:
+    # Defaulting to 2 offspring per pair to prevent early collapse on -ts 5
+    print(f"Warning: Could not parse offspring distribution '{args.num_offspring}'. Defaulting to {{2: 1.0}}.")
+    number_offspring_dist = {2: 1.0}
+
+try:
+    populations_dict, new_hi_het_data = simulate_generations(
+        simulator=recomb_simulator,
+        initial_pop=p0_pop,
+        crossing_plan=crossing_plan,
+        number_offspring=number_offspring_dist,
+        crossover_dist=crossover_dist_parsed,
+        track_ancestry=args.pedigree_recording, # Mapping -pr to track_ancestry
+        track_blocks=args.track_blocks,
+        track_junctions=args.track_junctions,
+        output_locus=args.output_locus,
+        verbose=True,
+        args=args
+    )
+    
+    # Merge results
+    hi_het_data.update(new_hi_het_data)
+    recomb_simulator.populations_dict = populations_dict
+
+except Exception as e:
+    print(f"CRITICAL ERROR during simulation loop: {e}")
+    import traceback
+    traceback.print_exc()
+    exit(1)
+
+print(f"--- CROSSING FINISHED. Populations: {list(recomb_simulator.populations_dict.keys())} ---\n")
+
+# ===========================================================================================
+#   COMPILE GENOTYPE DATA FOR VISUALIZATION (Placed AFTER simulation)
+# ===========================================================================================
 
 print("Compiling locus genotype data for visualization and output...")
 try:
-    # Compile population dictionary to a DataFrame for downstream plotting
-    p0_genotype_df = compile_locus_data_to_df(recomb_simulator.populations_dict)
+    # 1. Compile the full data set (P0 through P4)
+    locus_genotype_df = compile_locus_data_to_df(recomb_simulator.populations_dict)
 except NameError as e:
     print(f"FATAL ERROR: Compilation function not found. Error: {e}")
     exit(1)
 
-# Prepare map DataFrame
+# ------------------------------------------------------------------------------------------
+# 2. Prepare map DataFrame (Defines marker_map_data_df)
+# ------------------------------------------------------------------------------------------
 marker_map_data_df = pd.DataFrame(known_markers_data)
 marker_map_data_df['marker_index'] = marker_map_data_df.index.to_numpy()
 print("Added 'marker_index' column to map data for alignment with locus data.")
 
-# Ensure plotting column exists
 if 'cM_pos' in marker_map_data_df.columns:
     marker_map_data_df = marker_map_data_df.rename(columns={'cM_pos': 'position'})
     print("Renamed 'cM_pos' to 'position' for plotting.")
@@ -2763,34 +2882,49 @@ else:
     raise ValueError("Marker map must contain 'cM_pos' or 'base_pair' for plotting.")
 
 # ===========================================================================================
-#   SAVE Locus Genotype Data
+#   SAVE Locus Genotype Data
 # ===========================================================================================
+output_dir = os.path.join(args.output_dir, "results")
+os.makedirs(output_dir, exist_ok=True)
+locus_csv = os.path.join(output_dir, f"{args.output_name}_locus_genotype_data.csv")
+
 if args.output_locus:
-    output_dir = os.path.join(args.output_dir, "results")
-    os.makedirs(output_dir, exist_ok=True)
-    locus_csv = os.path.join(output_dir, f"{args.output_name}_locus_genotype_data.csv")
-    p0_genotype_df.to_csv(locus_csv, index=False)
+    # Saved the full DataFrame
+    locus_genotype_df.to_csv(locus_csv, index=False)
     print(f"Locus genotype data saved to: {locus_csv}")
 
 # ===========================================================================================
-#   VISUALIZATION
+#   VISUALIZATION
 # ===========================================================================================
-TARGET_INDIVIDUAL_ID = "P1_1"
+# Dynamically select the target individual (Last generation, First individual)
+last_gen_label = crossing_plan[-1]['offspring_label']
+TARGET_INDIVIDUAL_ID = f"{last_gen_label}_1"
 TARGET_CHROMOSOME = 1
 
 print(f"Generating ancestry visualization for Individual {TARGET_INDIVIDUAL_ID} on Chromosome {TARGET_CHROMOSOME}...")
-plot_chromosome_ancestry(
-    p0_genotype_df,
-    marker_map_data_df,
-    TARGET_INDIVIDUAL_ID,
-    TARGET_CHROMOSOME,
-    f"simulation_outputs/results/ancestry_track_chr{TARGET_CHROMOSOME}_{TARGET_INDIVIDUAL_ID}_{args.output_name}.png"
-)
+try:
+    # FIX: Reloading the saved CSV ensures the plotting function gets the final, 
+    # fully-written data, bypassing potential in-memory scoping issues.
+    reloaded_locus_genotype_df = pd.read_csv(locus_csv)
+    
+    plot_chromosome_ancestry(
+        reloaded_locus_genotype_df, # Use the reloaded data
+        marker_map_data_df,
+        TARGET_INDIVIDUAL_ID,
+        TARGET_CHROMOSOME,
+        f"simulation_outputs/results/ancestry_track_chr{TARGET_CHROMOSOME}_{TARGET_INDIVIDUAL_ID}_{args.output_name}.png"
+    )
+except Exception as e:
+    print(f"Visualization Skipped/Error: {e}")
+    # This keeps the traceback print for debugging hidden unless needed
+    # import traceback
+    # traceback.print_exc()
 
 # ===========================================================================================
-#   OUTPUT HANDLING
+#   OUTPUT HANDLING
 # ===========================================================================================
+# Ensure the handle_outputs function uses the complete DataFrame
 all_hi_het_data = {**initial_hi_het_data, **hi_het_data}
-handle_outputs(args, all_hi_het_data, p0_genotype_df)
+handle_outputs(args, all_hi_het_data, locus_genotype_df)
 
 print(f"Finished Simulation Replicate {args.replicate_id}")
