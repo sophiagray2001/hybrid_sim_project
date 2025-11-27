@@ -549,32 +549,29 @@ class RecombinationSimulator:
     def calculate_hi_het(self, individual):
         """
         Calculates Hybrid Index (HI) and Heterozygosity (HET) for an individual.
-        Explicitly handles and excludes missing data (-1).
-        
-        FIX: The calculation iterates over alleles to ensure that only non-missing 
-        alleles (0 or 1) contribute to the HI sum and the total allele count.
+        Uses floating-point stability checks to ensure accurate summation of 0/1 alleles,
+        preventing negative HI scores from encoding errors.
         """
         
-        # Total number of non-missing alleles (The denominator for HI)
+        # Tolerance for floating point comparison (e.g., if value is very close to 1)
+        TOLERANCE = 1e-9 
+        
+        # Total number of non-missing alleles (Denominator for HI)
         total_present_alleles = 0
         
-        # Sum of '1' alleles (The numerator for HI)
-        sum_alleles_1s = 0
+        # Sum of '1' alleles (Numerator for HI)
+        sum_alleles_1s = 0.0 # Use float for sum
         
-        # Total number of fully present markers (The denominator for HET)
+        # Total number of fully present markers (Denominator for HET)
         total_fully_present_markers = 0
         
-        # Total number of heterozygous markers (The numerator for HET)
+        # Total number of heterozygous markers (Numerator for HET)
         heterozygous_markers = 0
         
-        # The internal marker map structure must be available here.
-        if not hasattr(self, 'chromosome_structure'):
-             # Fallback logic if structure is missing, depending on your setup
-             print("Warning: chromosome_structure not found on self. Skipping calculation.")
-             return np.nan, np.nan
+        MISSING = self.MISSING_DATA_CODE
 
         for chrom_id in self.chromosome_structure.keys():
-            # hapA and hapB are numpy arrays of 0, 1, or -1
+            # hapA and hapB are numpy arrays of 0, 1, or -1 (or potentially with float noise)
             hapA, hapB = individual.genome.chromosomes[chrom_id]
             
             for i in range(len(hapA)): 
@@ -583,39 +580,54 @@ class RecombinationSimulator:
                 
                 # --- 1. HI Calculation: Count all non-missing alleles ---
                 
-                # Check Hap A
-                if a != self.MISSING_DATA_CODE:
-                    sum_alleles_1s += a
+                # Check Hap A: Only count if it's not missing
+                if a != MISSING:
+                    # Robustly check if allele is 1 (within tolerance)
+                    if np.isclose(a, 1.0, atol=TOLERANCE):
+                        sum_alleles_1s += 1.0
+                    elif np.isclose(a, 0.0, atol=TOLERANCE):
+                        sum_alleles_1s += 0.0
+                    # If it's a value we don't recognize (like a large negative number 
+                    # from a corruption that wasn't exactly -1), we ignore it.
+                    
                     total_present_alleles += 1
                 
-                # Check Hap B
-                if b != self.MISSING_DATA_CODE:
-                    sum_alleles_1s += b
+                # Check Hap B: Only count if it's not missing
+                if b != MISSING:
+                    # Robustly check if allele is 1 (within tolerance)
+                    if np.isclose(b, 1.0, atol=TOLERANCE):
+                        sum_alleles_1s += 1.0
+                    elif np.isclose(b, 0.0, atol=TOLERANCE):
+                        sum_alleles_1s += 0.0
+                        
                     total_present_alleles += 1
                 
                 # --- 2. HET Calculation: Only count markers that are fully present ---
-                is_fully_present = (a != self.MISSING_DATA_CODE) and (b != self.MISSING_DATA_CODE)
+                is_fully_present = (a != MISSING) and (b != MISSING)
                 
                 if is_fully_present:
                     total_fully_present_markers += 1
                     
-                    if a != b:
+                    # We compare the floating point values here
+                    # Since we know input is 0 or 2, we expect a==b.
+                    if not np.isclose(a, b, atol=TOLERANCE):
                         # Marker is heterozygous (e.g., 0|1 or 1|0)
                         heterozygous_markers += 1
                         
         # --- Final Calculations ---
         
-        if total_present_alleles > 0 and total_fully_present_markers > 0:
-            # HI: Sum of '1' alleles / Total count of non-missing alleles (0s and 1s)
+        # HI is based on the count of all present alleles
+        if total_present_alleles > 0:
             hi = sum_alleles_1s / total_present_alleles
-            
-            # HET: Proportion of fully present markers that are heterozygous
-            het = heterozygous_markers / total_fully_present_markers
-            
         else:
-            # Handle the case where all markers are missing or only partially present
             hi = np.nan
-            het = np.nan
+            
+        # HET is based on the count of fully present markers
+        if total_fully_present_markers > 0:
+            het = heterozygous_markers / total_fully_present_markers
+        else:
+            # If HI was calculated, HET is 0 (as there are only partially present or fully missing markers)
+            het = np.nan if np.isnan(hi) else 0.0
             
         return hi, het
 
