@@ -13,6 +13,7 @@ from collections import defaultdict
 import warnings
 import copy
 import math
+import ast
 import csv
 
 # CLASSES
@@ -2507,7 +2508,7 @@ def _parse_crossover_distribution(dist_str):
         - values sum to 1
     """
     try:
-        dist = json.loads(dist_str.replace("'", "\""))
+        dist = ast.literal_eval(dist_str.replace("'", "\""))
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON in crossover distribution: {e}")
 
@@ -3039,7 +3040,7 @@ print("\nSTARTING SIMULATION")
 
 # 1. Parse Crossover Distribution Flag (-cd)
 try:
-    crossover_dist_parsed = json.loads(args.crossover_dist)
+    crossover_dist_parsed = ast.literal_eval(args.crossover_dist)
     # Ensure keys are integers (e.g., {1: 1.0})
     crossover_dist_parsed = {int(k): float(v) for k, v in crossover_dist_parsed.items()}
     print(f"Crossover distribution set to: {crossover_dist_parsed}")
@@ -3065,7 +3066,7 @@ except NameError:
 # 3. Define and Parse Offspring Distribution (-no flag)
 try:
     # Use the same JSON parsing logic as you used for -cd (crossover_dist)
-    number_offspring_dist = json.loads(args.num_offspring)
+    number_offspring_dist = ast.literal_eval(args.num_offspring)
     # Ensure keys are integers (number of offspring)
     number_offspring_dist = {int(k): float(v) for k, v in number_offspring_dist.items()}
     print(f"Offspring distribution set to: {number_offspring_dist}")
@@ -3142,11 +3143,13 @@ if args.output_locus:
     print(f"Locus genotype data saved to: {locus_csv}")
 
 # ===========================================================================================
-#   VISUALIZATION
+#   CHR VISUAL
 # ===========================================================================================
 # Dynamically select the target individual (Last generation, First individual)
 last_gen_label = crossing_plan[-1]['offspring_label']
 TARGET_INDIVIDUAL_ID = f"{last_gen_label}_1"
+
+#TARGET_INDIVIDUAL_ID = f"P1_1"
 TARGET_CHROMOSOME = 1
 
 print(f"Generating ancestry visualization for Individual {TARGET_INDIVIDUAL_ID} on Chromosome {TARGET_CHROMOSOME}...")
