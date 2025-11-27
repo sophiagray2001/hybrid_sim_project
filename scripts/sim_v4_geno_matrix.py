@@ -65,9 +65,6 @@ class Population:
     def get_individual_by_id(self, individual_id):
         return self.individuals.get(individual_id)
 
-# Assuming MISSING_DATA_CODE is globally available or defined here
-MISSING_DATA_CODE = -1
-
 class RecombinationSimulator:
     """
     Recombination simulator with map-aware, interval-based crossover placement.
@@ -79,6 +76,7 @@ class RecombinationSimulator:
       - By default, number of crossovers per chromosome ~ Poisson(lambda = chrom_length_M * co_multiplier).
       - If `crossover_dist` is provided (user-specified), it overrides only the number of crossovers.
     """
+    MISSING_DATA_CODE = -1 
 
     def __init__(
         self,
@@ -551,57 +549,73 @@ class RecombinationSimulator:
     def calculate_hi_het(self, individual):
         """
         Calculates Hybrid Index (HI) and Heterozygosity (HET) for an individual.
-        CRITICAL FIX: Explicitly excludes missing data (MISSING_DATA_CODE = -1).
+        Explicitly handles and excludes missing data (-1).
+        
+        FIX: The calculation iterates over alleles to ensure that only non-missing 
+        alleles (0 or 1) contribute to the HI sum and the total allele count.
         """
-        total_valid_markers = 0
+        
+        # Total number of non-missing alleles (The denominator for HI)
+        total_present_alleles = 0
+        
+        # Sum of '1' alleles (The numerator for HI)
         sum_alleles_1s = 0
+        
+        # Total number of fully present markers (The denominator for HET)
+        total_fully_present_markers = 0
+        
+        # Total number of heterozygous markers (The numerator for HET)
         heterozygous_markers = 0
         
+        # The internal marker map structure must be available here.
+        if not hasattr(self, 'chromosome_structure'):
+             # Fallback logic if structure is missing, depending on your setup
+             print("Warning: chromosome_structure not found on self. Skipping calculation.")
+             return np.nan, np.nan
+
         for chrom_id in self.chromosome_structure.keys():
+            # hapA and hapB are numpy arrays of 0, 1, or -1
             hapA, hapB = individual.genome.chromosomes[chrom_id]
             
-            # 1. Identify valid (non-missing) markers for HapA
-            # Note: We only need to check one haplotype, as both should be -1 if missing.
-            is_valid = hapA != MISSING_DATA_CODE
-            valid_indices = np.where(is_valid)[0]
-            
-            # Get only the valid alleles for this chromosome
-            valid_hapA = hapA[valid_indices]
-            valid_hapB = hapB[valid_indices]
-
-            # 2. Update Counts
-            valid_markers_on_chr = len(valid_hapA)
-            total_valid_markers += valid_markers_on_chr
-            
-            # Sum of '1' alleles (HI numerator): Only sum the valid 0s and 1s
-            sum_alleles_1s += np.sum(valid_hapA) + np.sum(valid_hapB)
-            
-            # Heterozygous markers: Compare only the valid alleles
-            heterozygous_markers += np.sum(valid_hapA != valid_hapB)
+            for i in range(len(hapA)): 
+                a = hapA[i]
+                b = hapB[i]
                 
+                # --- 1. HI Calculation: Count all non-missing alleles ---
+                
+                # Check Hap A
+                if a != self.MISSING_DATA_CODE:
+                    sum_alleles_1s += a
+                    total_present_alleles += 1
+                
+                # Check Hap B
+                if b != self.MISSING_DATA_CODE:
+                    sum_alleles_1s += b
+                    total_present_alleles += 1
+                
+                # --- 2. HET Calculation: Only count markers that are fully present ---
+                is_fully_present = (a != self.MISSING_DATA_CODE) and (b != self.MISSING_DATA_CODE)
+                
+                if is_fully_present:
+                    total_fully_present_markers += 1
+                    
+                    if a != b:
+                        # Marker is heterozygous (e.g., 0|1 or 1|0)
+                        heterozygous_markers += 1
+                        
         # --- Final Calculations ---
         
-        if total_valid_markers > 0:
-            # HI: Proportion of '1' alleles (Total '1's / Total possible valid alleles)
-            # Using your Original (Inverted) formula for HI to match the encoding flip we made earlier:
-            # We rely on sum_alleles_1s being the count of the '1' allele (P_B), 
-            # but since your input was flipped, we need the formula that calculates
-            # the proportion of the '0' allele (P_A).
-            # We'll use the CORRECT HI calculation based on the *fixed* input:
-            # HI = (Count of 1s) / (Total Valid Alleles)
+        if total_present_alleles > 0 and total_fully_present_markers > 0:
+            # HI: Sum of '1' alleles / Total count of non-missing alleles (0s and 1s)
+            hi = sum_alleles_1s / total_present_alleles
             
-            # Total possible alleles is 2 * total_valid_markers
-            
-            # We will use the direct HI formula (Proportion of '1's) and trust the input fix:
-            hi = sum_alleles_1s / (2 * total_valid_markers)
-            
-            # HET: Proportion of heterozygous sites (Count of Dosage 1 / Total Valid Markers)
-            het = heterozygous_markers / total_valid_markers
+            # HET: Proportion of fully present markers that are heterozygous
+            het = heterozygous_markers / total_fully_present_markers
             
         else:
-            # Handle the case where all markers are missing
-            hi = 0
-            het = 0
+            # Handle the case where all markers are missing or only partially present
+            hi = np.nan
+            het = np.nan
             
         return hi, het
 
@@ -911,31 +925,103 @@ def create_default_markers_map_only(args, marker_ids: list, n_markers: int, n_ch
 
     return known_markers_data
 
-# Assuming this constant is globally defined or imported:
-MISSING_DATA_CODE = -1 
+MISSING_DATA_CODE = -1
+# Define a default number of chromosomes if the information is missing from the map.
+DEFAULT_NUM_CHROMS = 1
+
+def split_flat_alleles_by_chromosome(
+    flat_alleles: list[int], 
+    known_markers_data: list[dict]
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """
+    Splits a flat list of interleaved alleles into a dictionary where keys are 
+    string chromosome IDs and values are a tuple of (Haplotype A, Haplotype B) NumPy arrays.
+    Biological marker order is preserved.
+    
+    NOTE: This implementation relies on the 'chromosome' key being present in 
+    each marker dictionary within known_markers_data.
+    """
+
+    marker_map = defaultdict(list)
+
+    # 1. Group markers by the 'chromosome' key
+    for i, marker in enumerate(known_markers_data):
+        try:
+            # We assume the 'chromosome' key is present due to preparation in the loader function
+            chr_id = str(marker['chromosome'])
+            marker_map[chr_id].append(i)
+        except KeyError:
+            # This should only happen if the loader preparation failed
+            raise KeyError(
+                "Marker map is missing the required 'chromosome' key. "
+                "Ensure map file includes a chromosome column or the default split logic runs correctly."
+            )
+
+    # 2. Sort chromosome IDs numerically for consistent output order
+    def safe_int_key(x):
+        try:
+            # Clean string to numerical part for correct sorting (e.g., 'Chr10' > 'Chr2')
+            return int(re.sub(r'[^0-9]', '', x))
+        except ValueError:
+            return x # Fallback for non-numeric IDs like 'X' or other text
+
+    sorted_chr_ids = sorted(marker_map.keys(), key=safe_int_key)
+
+    flat_alleles_np = np.array(flat_alleles, dtype=np.int8)
+
+    haplotypes_dict = {}
+    
+    # 3. Split the flat allele list using the global indices for each chromosome
+    for chr_id in sorted_chr_ids:
+        global_indices = np.array(marker_map[chr_id])
+
+        # Haplotype A indices are even (0, 2, 4, ...)
+        hapA_indices = 2 * global_indices
+        # Haplotype B indices are odd (1, 3, 5, ...)
+        hapB_indices = 2 * global_indices + 1
+
+        hapA_alleles = flat_alleles_np[hapA_indices]
+        hapB_alleles = flat_alleles_np[hapB_indices]
+
+        haplotypes_dict[chr_id] = (hapA_alleles, hapB_alleles)
+
+    return haplotypes_dict
 
 def load_p0_population_from_genotypes_final(
-    genotype_file_path: str, 
+    genotype_data,
     known_markers_data: list
 ) -> 'Population':
     """
     Loads P0 individuals from a genotype matrix, performs random phasing, 
     and robustly handles all input missing data codes (NaN, -9, -10, blank).
+    
+    This version assumes 'genotype_data' is an already-loaded and validated
+    Pandas DataFrame, removing the redundant and crashing read step.
+    
+    FIXED: 
+    1. The redundant pd.read_csv call that was causing the crash is removed.
+    2. The input parameter is now checked to be a DataFrame.
     """
     
-    # --- 1. Read the Genotype Data (Read WITHOUT index_col=0 for clean column handling) ---
-    try:
-        MISSING_INTEGER_CODES = [-9, -10]
-        # Read the entire file without setting an index column initially
-        df = pd.read_csv(
-            genotype_file_path, 
-            na_values=MISSING_INTEGER_CODES
-        ) 
-        df.columns = df.columns.astype(str)
-    except Exception as e:
-        raise IOError(f"Error reading genotype file {genotype_file_path}: {e}")
+    # --- 1. Use the Already-Loaded Genotype Data (CRITICAL CHANGE HERE) ---
+    
+    # Check if the input is the expected DataFrame type
+    if not isinstance(genotype_data, pd.DataFrame):
+        # If the input is still a string path, raise an error or attempt the old read.
+        # Given the new validation flow, we expect a DataFrame here.
+        raise TypeError(
+            f"Expected a Pandas DataFrame for genotype_data, but received {type(genotype_data)}."
+            "The genotype file should be loaded and validated *before* calling this function."
+        )
 
-    # 2. Marker ID cleanup + consistency
+    # Use the passed data directly
+    df = genotype_data 
+    
+    # The redundant try/except block for pd.read_csv (lines 994-1002 in your old script) is removed.
+    # The MISSING_DATA_CODE assignment must still be present if used later.
+    MISSING_DATA_CODE = -1
+    
+    # 2. Marker ID cleanup + consistency (Rest of the function remains the same)
     map_marker_ids = [m['marker_id'].strip().replace('\ufeff', '') for m in known_markers_data]
     
     df.columns = df.columns.str.strip().str.replace('\ufeff', '')
@@ -961,7 +1047,6 @@ def load_p0_population_from_genotypes_final(
     if missing_count > 0:
         print(f"Warning: {missing_count} markers from the map list were not found in the genotype file. Dropping them.")
         
-    # Line 956 (where the error was raised)
     if not present_markers:
         raise ValueError("CRITICAL ERROR: Zero markers matched between map and genotype file.")
         
@@ -972,10 +1057,72 @@ def load_p0_population_from_genotypes_final(
         df = df.astype(float, errors='raise')
     except ValueError:
         df = df.apply(pd.to_numeric, errors='coerce')
-        
+    
+    # Handle NaN values resulting from coercion or missing codes
     df = df.fillna(MISSING_DATA_CODE)
 
-    # --- 4. Create population ---
+    # --- 3b. Determine Chromosome IDs and Marker Groups (Three-Tiered Logic) ---
+    # ... (Tier 1 & Tier 2 logic remains unchanged) ...
+    
+    # List of possible keys for chromosome ID, ordered by preference
+    CHROM_KEYS = ['chromosome_id', 'chrom', 'chr', 'chromosome'] 
+    chrom_key_used = 'chromosome' # This is the standardized key required by split_flat_alleles_by_chromosome
+    DEFAULT_NUM_CHROMS = 8 # Assuming this constant is defined elsewhere in your script
+    
+    # --- Tier 1: Check Map File for Chromosome Column ---
+    total_markers = len(known_markers_data)
+    original_key_found = None
+    if total_markers > 0:
+        first_marker = known_markers_data[0]
+        for key in CHROM_KEYS:
+            if key in first_marker:
+                original_key_found = key
+                break
+
+    if original_key_found:
+        print(f"INFO: Chromosome grouping found in map file under key: '{original_key_found}'. Standardizing key to 'chromosome'.")
+        
+        # Action: Ensure all markers use the standardized 'chromosome' key
+        for marker in known_markers_data:
+            if original_key_found != chrom_key_used:
+                # Rename the key if it's not already the standard one
+                marker[chrom_key_used] = marker.pop(original_key_found)
+                
+            # If the value is empty/missing, we might need to fall through to Tier 2 logic
+            if not marker[chrom_key_used] and original_key_found != chrom_key_used:
+                # If the key was renamed and the value is empty, the Tier 2 logic needs to fill it.
+                original_key_found = None
+                break
+    
+    # --- Tier 2: Synthesize Chromosome IDs and Even Distribution ---
+    if not original_key_found:
+        print(f"INFO: No valid chromosome column found in map. Distributing {total_markers} markers evenly across {DEFAULT_NUM_CHROMS} chromosomes.")
+        
+        NUM_CHROMS = DEFAULT_NUM_CHROMS
+        
+        if total_markers == 0:
+            NUM_CHROMS = 0
+            markers_per_chrom = 0
+            
+        elif total_markers % NUM_CHROMS != 0:
+            # This is the failure case for the -nc flag method if non-divisible
+            raise ValueError(
+                f"Cannot evenly distribute {total_markers} markers across {NUM_CHROMS} chromosomes (DEFAULT_NUM_CHROMS). "
+                f"The total number of markers must be divisible by this number, or the map file must specify chromosomes."
+            )
+        else:
+            markers_per_chrom = total_markers // NUM_CHROMS
+        
+        if NUM_CHROMS > 0:
+            # Create synthetic chromosome IDs ('1', '2', ..., '8')
+            ordered_chrom_ids = [str(i) for i in range(1, NUM_CHROMS + 1)]
+            
+            # Action: Inject the synthetic 'chromosome' key into known_markers_data
+            for i, marker in enumerate(known_markers_data):
+                chrom_index = i // markers_per_chrom
+                marker[chrom_key_used] = ordered_chrom_ids[chrom_index]
+    
+    # --- 4. Process Individuals and Phasing ---
     p0_pop = Population('P0')
     
     # New iteration method: Use the pandas index (which starts at 0) and the stored individual_ids
@@ -989,33 +1136,42 @@ def load_p0_population_from_genotypes_final(
         if num_markers == 0:
             continue
 
-        # Allocate haplotypes. Initializing to 0|0 means the default assumption 
+        # Allocate haplotypes. Initializing to 0|0 (the P2 parent)
         haplotype_A = np.zeros(num_markers, dtype=float) 
         haplotype_B = np.zeros(num_markers, dtype=float)
         
-        is_missing = genotypes == MISSING_DATA_CODE
-        is_present = ~is_missing
-        
         # ---------------------------------------------------------------------
-        # CRITICAL FIX: Invert Dosage 0 and Dosage 2 assignments 
+        # CRITICAL FIX: Robustly identify ALL non-standard dosages as missing.
         # ---------------------------------------------------------------------
+
+        # Identify markers with valid dosages (0, 1, or 2)
+        is_dosage_0 = (genotypes == 0)
+        is_dosage_1 = (genotypes == 1)
+        is_dosage_2 = (genotypes == 2)
         
-        # Homozygous 0/0 (Input file's P_B): Assign internal allele '1' (HI=1)
-        homo_0_indices = np.where((genotypes == 0) & is_present)[0]
-        haplotype_A[homo_0_indices] = 1 
-        haplotype_B[homo_0_indices] = 1 
+        is_valid_dosage = is_dosage_0 | is_dosage_1 | is_dosage_2
+        is_missing_or_invalid = ~is_valid_dosage
         
-        # Homozygous 2/2 (Input file's P_A): Remains 0|0 from initialization.
+        # --- 1. Assign Ancestry (Phasing) ---
         
-        # Heterozygous (Dosage 1) - random phasing
-        hetero_indices = np.where((genotypes == 1) & is_present)[0]
+        # Homozygous 2/2 (P1/P1 Ancestry) -> 1|1
+        homo_2_indices = np.where(is_dosage_2)[0]
+        haplotype_A[homo_2_indices] = 1 
+        haplotype_B[homo_2_indices] = 1 
+        
+        # Heterozygous 1 (P1/P2 Ancestry) -> random 0|1 or 1|0
+        hetero_indices = np.where(is_dosage_1)[0]
         rand_alleles = np.random.randint(0, 2, size=len(hetero_indices))
         haplotype_A[hetero_indices] = rand_alleles
         haplotype_B[hetero_indices] = 1 - rand_alleles
+
+        # Homozygous 0/0 (P2/P2 Ancestry) -> 0|0 (Left as 0 by initialization)
         
-        # Missing propagate (set to MISSING_DATA_CODE, e.g., -1)
-        haplotype_A[is_missing] = MISSING_DATA_CODE
-        haplotype_B[is_missing] = MISSING_DATA_CODE
+        # --- 2. Propagate Missing Data ---
+        
+        # Missing/Invalid (e.g., -10, NaN, or non-integer -1) -> -1|-1
+        haplotype_A[is_missing_or_invalid] = MISSING_DATA_CODE
+        haplotype_B[is_missing_or_invalid] = MISSING_DATA_CODE
 
         # --- 5. Interleave haplotypes A/B ---
         flat_alleles_interleaved = np.empty(2 * num_markers, dtype=float) 
@@ -1030,30 +1186,87 @@ def load_p0_population_from_genotypes_final(
 
         if actual_len != expected_len:
             print("\nERROR: Allele array length mismatch!")
-            print(f"  Markers in map:        {len(known_markers_data)}")
-            print(f"  Markers in genotype: {num_markers}")
-            print(f"  Expected allele count: {expected_len}")
-            print(f"  Actual allele count:   {actual_len}")
-            print("  → Marker ordering or filtering mismatch.\n")
+            print(f" Markers in map:{len(known_markers_data)}")
+            print(f" Markers in genotype: {num_markers}")
+            print(f" Expected allele count: {expected_len}")
+            print(f" Actual allele count: {actual_len}")
+            print(" Marker ordering or filtering mismatch.\n")
             raise ValueError("Allele array does not match marker map length.")
         # ---------------------------------------------------------------------
 
-        # --- 6. Split by chromosome safely ---
-        haplotypes_split = split_flat_alleles_by_chromosome(
-            flat_alleles_interleaved, 
+        # --- 6. Split by chromosome (Now calls the external function) ---
+        haplotypes_dict = split_flat_alleles_by_chromosome(
+            flat_alleles_interleaved.tolist(), 
             known_markers_data
         )
         
+        # --- 7. Finalize Individual ---
         individual = Individual(
             individual_id=individual_id, 
             generation='P0', 
-            genome=Genome(haplotypes_split),
+            genome=Genome(haplotypes_dict),
             parent1_id='File_Source', 
             parent2_id='File_Source'
         )
         p0_pop.add_individual(individual)
 
     return p0_pop
+
+def validate_genotypes(
+    genotypes_raw, 
+    valid_dosages=(0, 1, 2), 
+    missing_codes=(-9, -10)
+):
+    """
+    Checks and casts a raw NumPy array of genotype dosages. 
+    It explicitly handles cases where the raw data includes non-numeric characters (like '!') 
+    which cause TypeErrors during array manipulation.
+    """
+    
+    # 1. ATTEMPT COERCION TO INTEGER TYPE (This is the critical step to prevent TypeErrors)
+    try:
+        # If 'genotypes_raw' contains '!', this .astype() call will raise a ValueError.
+        genotypes = genotypes_raw.astype(np.int64)
+    except ValueError:
+        # Catch the failure when converting text ('!') to numbers.
+        raise ValueError(
+            "Input data type error: Could not convert all genotype dosages to integers. "
+            "A non-numeric symbol (e.g., '!', 'NA', or mixed text/numbers) was detected in "
+            "the dosage columns. Please check and clean your input file."
+        )
+
+    # 2. VALIDATION CHECK (only on clean integer values)
+    valid_set = set(valid_dosages) | set(missing_codes)
+    
+    # Now that we have a clean integer array, np.unique will not crash.
+    unique_values = np.unique(genotypes)
+    
+    # Find any unique values that are NOT in the accepted set
+    invalid_values = [int(val) for val in unique_values if val not in valid_set]
+
+    if invalid_values:
+        first_invalid_val = invalid_values[0]
+        
+        # Identify location of the error (simplified location reporting)
+        indices = np.where(genotypes == first_invalid_val)
+        
+        if genotypes.ndim == 2:
+            row = indices[0][0]
+            col = indices[1][0]
+            location_info = f"at row {row}, column {col}"
+        else:
+            location_info = f"at index {indices[0][0]}"
+
+        # Raise a clear, actionable error
+        raise ValueError(
+            f"Input data validation failed: Detected invalid genotype dosage value(s). "
+            f"Invalid integer value '{first_invalid_val}' detected {location_info}. "
+            f"Only the following integer dosages/codes are accepted: {sorted(list(valid_set))}. "
+            f"Please clean your input file before running the simulation."
+        )
+
+    # 3. Success: return the clean, integer array
+    return genotypes
 
 def compile_locus_data_to_df(populations_dict: Dict[str, 'Population']) -> pd.DataFrame:
     """
@@ -1254,41 +1467,6 @@ def validate_marker_map(markers):
             raise ValueError(f"Invalid recombination rate ≥0.5 on chromosome {chr_id}.")
 
     return True
-
-def split_flat_alleles_by_chromosome(
-    flat_alleles: list[int], 
-    known_markers_data: list[dict]
-) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-    """
-    Splits a flat list of interleaved alleles into a dictionary where keys are 
-    string chromosome IDs and values are a tuple of (Haplotype A, Haplotype B) NumPy arrays.
-    Biological marker order is preserved.
-    """
-
-    marker_map = defaultdict(list)
-
-    for i, marker in enumerate(known_markers_data):
-        chr_id = str(marker['chromosome'])
-        marker_map[chr_id].append(i)
-
-    sorted_chr_ids = sorted(marker_map.keys(), key=lambda x: int(x))
-
-    flat_alleles_np = np.array(flat_alleles, dtype=np.int8)
-
-    haplotypes_dict = {}
-    
-    for chr_id in sorted_chr_ids:
-        global_indices = np.array(marker_map[chr_id])
-
-        hapA_indices = 2 * global_indices
-        hapB_indices = 2 * global_indices + 1
-
-        hapA_alleles = flat_alleles_np[hapA_indices]
-        hapB_alleles = flat_alleles_np[hapB_indices]
-
-        haplotypes_dict[chr_id] = (hapA_alleles, hapB_alleles)
-
-    return haplotypes_dict
 
 def build_panmictic_plan(num_generations: int, target_pop_size: int):
     """
@@ -1538,23 +1716,42 @@ def simulate_generations(
         total_nonmissing = 0
         sum_alleles = 0
         heterozygous = 0
+        
+        # NOTE: Assuming MISSING_DATA_CODE = -1 is available globally or imported here
+        MISSING_DATA_CODE = -1 
+
         for chrom_id in simulator.chromosome_structure.keys():
             hapA, hapB = individual.genome.chromosomes[chrom_id]
             hapA = np.asarray(hapA)
             hapB = np.asarray(hapB)
-            valid = (hapA != -1) & (hapB != -1)
+            
+            # Find markers where both alleles are NOT missing
+            valid = (hapA != MISSING_DATA_CODE) & (hapB != MISSING_DATA_CODE)
             cnt = int(np.sum(valid))
             if cnt == 0:
                 continue
+                
             total_nonmissing += cnt
+            
+            # Sum of '1' alleles (HI numerator): Count of Ancestry 1 alleles
             sum_alleles += int(np.sum(hapA[valid]) + np.sum(hapB[valid]))
+            
+            # Heterozygous markers: Count sites where the two haplotypes differ (0|1 or 1|0)
             heterozygous += int(np.sum(hapA[valid] != hapB[valid]))
+            
+        # --- CRITICAL FIX: Return NaN if no valid data is present ---
         if total_nonmissing == 0:
-            return 0.0, 0.0
-        hi = ((2 * total_nonmissing) - sum_alleles) / (2 * total_nonmissing)
+            # We return np.nan to explicitly indicate 'No Data' instead of forcing HI=0/HET=0
+            return np.nan, np.nan
+            
+        # HI: Proportion of Ancestry 1 alleles ('1's).
+        hi = sum_alleles / (2 * total_nonmissing)
+        
+        # HET: Proportion of heterozygous sites (Count of Dosage 1 / Total Valid Markers)
         het = heterozygous / total_nonmissing
+        
         return hi, het
-
+        
     # Outputs
     hi_het_data = {}
 
@@ -2632,10 +2829,6 @@ if __name__ == "__main__":
 # ===========================================================================================
 #   START OF SIMULATION EXECUTION BLOCK
 # ===========================================================================================
-import json # Required for parsing the crossover flag
-import os # Required for file path joins (os.path.join)
-import pandas as pd # Required for DataFrames
-
 print(f"\nStarting Simulation Replicate {args.replicate_id}")
 
 # Seed handling
@@ -2657,42 +2850,86 @@ known_markers_data = []
 num_pop0_synthetic = args.num_pop0
 
 # ------------------------------------------------------------
-# CASE 1 — GENOTYPE FILE MODE
+# CASE 1 — GENOTYPE FILE MODE (FULLY UPDATED & FIXED)
 # ------------------------------------------------------------
 if args.genotype_file:
     print("\nFile Input Mode Detected (Genotype File Provided).")
 
-    # CRITICAL FIX: Load the Map File FIRST
     if not args.map_file:
         raise ValueError("Genotype file provided, but map file path (-mf) is missing.")
-        
+
+    # ------------------------------------------------------------------
+    # 1. Load and Normalize MAP File
+    # ------------------------------------------------------------------
     try:
-        # Read the map file: marker_id,chromosome,base_pair,cM_pos
         map_df = pd.read_csv(args.map_file)
-        
-        # Standardize column names
         map_df.columns = map_df.columns.str.strip().str.replace('\ufeff', '')
 
         if 'marker_id' not in map_df.columns:
             raise ValueError("Map file must contain a column named 'marker_id'.")
-            
-        map_df['marker_id'] = map_df['marker_id'].str.strip().str.replace('\ufeff', '')
-        
+
+        map_df['marker_id'] = (
+            map_df['marker_id']
+            .astype(str)
+            .str.strip()
+            .str.replace('\ufeff', '')
+        )
+
         known_markers_data = map_df.to_dict('records')
         print(f"Loaded {len(known_markers_data)} markers from map file: {args.map_file}")
-        
+
     except Exception as e:
         raise IOError(f"Error reading and processing map file {args.map_file}: {e}")
 
-    # Load P0 population
-    p0_pop = load_p0_population_from_genotypes_final(
-        args.genotype_file,
-        known_markers_data
-    )
-    print(f"Loaded {len(p0_pop.individuals)} individuals into P0.")
+    # ------------------------------------------------------------------
+    # 2. Load Genotype CSV once (df_genotypes)
+    # ------------------------------------------------------------------
+    try:
+        df_genotypes = pd.read_csv(args.genotype_file)
+        df_genotypes.columns = df_genotypes.columns.str.strip().str.replace('\ufeff', '')
+        print(f"Loaded genotype file with shape: {df_genotypes.shape}")
+    except Exception as e:
+        raise IOError(f"Error reading genotype file {args.genotype_file}: {e}")
+
+    # ------------------------------------------------------------------
+    # 3. Genotype Validation (Robust)
+    # ------------------------------------------------------------------
+    print("\n--- Running Robust Genotype Validation ---")
+
+    ID_COLUMNS_TO_EXCLUDE = ["PlantID", "RametIDs"]
+    dosage_columns = [col for col in df_genotypes.columns if col not in ID_COLUMNS_TO_EXCLUDE]
+
+    if not dosage_columns:
+        raise ValueError("No dosage columns found after excluding ID columns. Check genotype file headers.")
+
+    raw_dosages_array = df_genotypes[dosage_columns].values
+
+    try:
+        validated = validate_genotypes(raw_dosages_array)
+        print("Validation successful: all genotype dosages are valid.")
+    except ValueError as e:
+        raise ValueError(f"Genotype validation failed: {e}")
+
+    # If function returned cleaned array, update df_genotypes
+    if isinstance(validated, np.ndarray):
+        df_genotypes.loc[:, dosage_columns] = validated
+
+    # ------------------------------------------------------------------
+    # 4. Create P0 Population
+    # ------------------------------------------------------------------
+    try:
+        p0_pop = load_p0_population_from_genotypes_final(
+            df_genotypes,
+            known_markers_data
+        )
+        print(f"Loaded {len(p0_pop.individuals)} individuals into P0.")
+    except Exception as e:
+        raise RuntimeError(f"Error creating P0 population from genotype file: {e}")
 
 else:
-    # Existing synthetic P0 generation
+    # ------------------------------------------------------------------
+    # SYNTHETIC MODE
+    # ------------------------------------------------------------------
     print("\nRunning in FULL Synthetic Mode (No files provided).")
     try:
         md_probs = parse_list_or_value(args.missing_data, args.num_marker)
@@ -2711,37 +2948,36 @@ else:
 # ===========================================================================================
 #   REORDER MARKER MAP TO MATCH GENOTYPE FILE
 # ===========================================================================================
+
 if args.genotype_file:
     print("\nReordering marker map to match genotype file order...")
 
-    # --- Re-read the genotype file to define 'df' locally ---
-    try:
-        df = pd.read_csv(args.genotype_file) 
-        df.columns = df.columns.str.strip().str.replace('\ufeff', '')
-    except Exception as e:
-        print(f"Error reading genotype file for marker re-ordering check: {e}")
-        exit(1)
+    # Use df_genotypes already loaded above
+    df = df_genotypes.copy()
 
     ID_COLUMNS_TO_EXCLUDE = ["PlantID", "RametIDs"]
     columns_to_exclude = [col for col in ID_COLUMNS_TO_EXCLUDE if col in df.columns]
 
+    # Marker IDs in genotype header
     header_marker_ids = [col for col in df.columns if col not in columns_to_exclude]
 
-    # --- Reordering Logic ---
+    # Dictionary of markers by marker_id
     marker_dict_by_id = {m["marker_id"]: m for m in known_markers_data}
 
     reordered = []
     missing_from_map = []
     missing_from_geno = []
 
+    # Match map order to genotype file order
     for mid in header_marker_ids:
         if mid in marker_dict_by_id:
             reordered.append(marker_dict_by_id[mid])
         else:
             missing_from_map.append(mid)
 
+    # Check markers present in map but not genotype file
     genotype_marker_set = set(header_marker_ids)
-    for mid in marker_dict_by_id:
+    for mid in marker_dict_by_id.keys():
         if mid not in genotype_marker_set:
             missing_from_geno.append(mid)
 
@@ -2773,7 +3009,7 @@ if not args.genotype_file:
     print(f"Generated synthetic P0 of size {num_pop0_synthetic}.")
 
 # Register P0 in the simulator
-recomb_simulator.get_population(p0_pop) # Corrected to .add_population
+recomb_simulator.get_population(p0_pop)
 
 # ===========================================================================================
 #   INITIAL HI/HET CALCULATION
@@ -2787,7 +3023,7 @@ for ind in p0_pop.individuals.values():
 # ===========================================================================================
 #   SIMULATION LOGIC
 # ===========================================================================================
-print("\n--- STARTING SIMULATION ---")
+print("\nSTARTING SIMULATION")
 
 # 1. Parse Crossover Distribution Flag (-cd)
 try:
