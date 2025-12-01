@@ -2330,6 +2330,8 @@ def plot_pedigree_visual(ancestry_data_df, start_individual_id, output_path):
     plt.savefig(output_path, bbox_inches="tight")
     plt.close()
 
+import matplotlib.patches as mpatches
+
 def plot_chromosome_ancestry(
     p0_genotype_df,
     marker_map_df,
@@ -2338,20 +2340,29 @@ def plot_chromosome_ancestry(
     output_path
 ):
     """
-    Ancestry-track plot for a chromosome using colored rectangles (blocks) 
-    to emphasize continuous ancestry segments (0 or 1) along the genetic map distance.
-    (V6: Added marker IDs below the X-axis for pinpointing specific loci.)
+    Ancestry-dosage plot for a chromosome using colored vertical lines (markers)
+    to emphasize the overall ancestry dosage (0, 1, or 2) along the genetic map distance.
+    (New: Single track for Genotype/Dosage only.)
     """
 
-    # Define colors for the two ancestral populations (0=Ancestry A, 1=Ancestry B)
-    color_map = {0: 'skyblue', 1: 'salmon'}
-    MIN_GAP = 1e-6 # A tiny gap to ensure the last block has a width
+    # Define colors for the ancestry dosage (0=Ancestry A/A, 1=A/B, 2=B/B, -1=Missing)
+    # 0 = Blue (Ancestry A/A)
+    # 1 = Purple (Ancestry A/B or B/A)
+    # 2 = Red (Ancestry B/B)
+    # NaN/Missing = Grey
+    
+    color_map = {
+        0: 'blue',
+        1: 'purple',
+        2: 'red',
+    }
+    MISSING_COLOR = 'grey'
+    LINE_HEIGHT = 1.0 # The height of the marker line
 
     # ------------------------------
-    # 1. Filter map for chromosome and sort by position
+    # 1. Filter map for chromosome and sort by position (same as before)
     # ------------------------------
     map_chr = marker_map_df[marker_map_df["chromosome"] == target_chr].copy()
-
     if map_chr.empty:
         print(f" No markers found for chromosome {target_chr}")
         return
@@ -2359,7 +2370,6 @@ def plot_chromosome_ancestry(
     if "marker_index" not in map_chr.columns:
         map_chr = map_chr.reset_index().rename(columns={"index": "marker_index"})
     
-    # Ensure marker_id exists or create a fallback ID
     if "marker_id" not in map_chr.columns:
         map_chr['marker_id'] = map_chr['marker_index'].astype(str).apply(lambda x: f"M_{x}")
     
@@ -2376,17 +2386,12 @@ def plot_chromosome_ancestry(
 
     marker_indices = map_chr["marker_index"].astype(int).tolist()
     positions = map_chr[pos_col].values
-    marker_ids = map_chr["marker_id"].values # Extract marker IDs here
+    marker_ids = map_chr["marker_id"].values
     
-    # Calculate the width of each block based on the distance to the next marker
-    diffs = np.diff(positions, prepend=positions[0])
-    widths = np.append(np.diff(positions), diffs[-1] if len(diffs) > 1 else MIN_GAP)
-    widths[widths <= 0] = MIN_GAP
-    
-    print(f"Using '{pos_col}' (cM/M/bp) as positional coordinate for block width.")
+    print(f"Using '{pos_col}' (cM/M/bp) as positional coordinate for markers.")
 
     # ------------------------------
-    # 2. Filter and align genotype data
+    # 2. Filter and align genotype data (same as before)
     # ------------------------------
     gen_df = p0_genotype_df[
         (p0_genotype_df["individual_id"] == target_individual) &
@@ -2410,70 +2415,71 @@ def plot_chromosome_ancestry(
     gen_df = gen_df.drop_duplicates(subset=["marker_index"], keep="first")
     gen_df = gen_df.set_index("marker_index").reindex(marker_indices)
 
-    # Extract haplotypes
+    # Extract haplotypes (ancestry is 0 or 1)
     hapA_raw = gen_df[hapA_col].replace({np.nan: -1}).astype(int).values
     hapB_raw = gen_df[hapB_col].replace({np.nan: -1}).astype(int).values
     
-    # Calculate the numeric genotype (dosage)
+    # Calculate the numeric genotype (dosage: 0, 1, or 2)
+    # The sum (hapA + hapB) gives the count of Ancestry '1' alleles.
     numeric_genotype = (hapA_raw + hapB_raw).astype(float)
-    numeric_genotype[np.where(hapA_raw == -1)] = np.nan
+    
+    # Check for missing data. If EITHER hapA or hapB is missing (-1), the dosage is NaN (missing).
+    # Since missing data was replaced with -1, if the sum is -2, it's 0/0 (dosage 0).
+    # If the sum is -1, one is missing (e.g., -1 + 0 or -1 + 1), so it should be NaN.
+    # The easiest way is to re-apply NaN if the original raw data had a -1.
+    missing_mask = np.where((hapA_raw == -1) | (hapB_raw == -1))
+    numeric_genotype[missing_mask] = np.nan
     
     # ------------------------------
-    # 3. Plot (Rectangle Style)
+    # 3. Plot (Vertical Line Style)
     # ------------------------------
-    # Increase figsize and use 'gridspec' for margin control
-    fig, axs = plt.subplots(3, 1, figsize=(14, 8), sharex=True) # Increased height to 8
+    fig, ax = plt.subplots(1, 1, figsize=(14, 4)) # Single track plot
 
-    # --- Helper function for plotting Haplotypes ---
-    def plot_haplotype(ax, hap_data, title):
-        ax.set_title(title)
-        for pos, width, ancestry in zip(positions, widths, hap_data):
-            if ancestry in color_map:
-                ax.add_patch(mpatches.Rectangle((pos, 0), width, 1, color=color_map[ancestry], linewidth=0))
-        # Vlines define the boundaries (the markers themselves)
-        ax.vlines(positions, 0, 1, color='black', linewidth=0.5, zorder=5)
+    #ax.set_title(f"Genotype Dosage Track for {target_individual} on Chromosome {target_chr}", fontsize=14)
+    ax.set_ylim(0, LINE_HEIGHT)
+    ax.set_yticks([]) # Remove Y-axis labels and ticks
 
-    # Plot Haplotype A and B
-    plot_haplotype(axs[0], hapA_raw, "Haplotype A (Ancestry Blocks)")
-    plot_haplotype(axs[1], hapB_raw, "Haplotype B (Ancestry Blocks)")
-    
-    # --- Subplot 2: Numeric Genotype ---
-    axs[2].set_title("Genotype (0=0/0, 1=0/1, 2=1/1)")
-    for pos, width, dosage in zip(positions, widths, numeric_genotype):
-        axs[2].add_patch(mpatches.Rectangle((pos, 0), width, 1, edgecolor='black', facecolor='white', fill=False))
-        if not np.isnan(dosage):
-             axs[2].text(
-                 pos + width / 2, 
-                 0.5, 
-                 str(int(dosage)), 
-                 ha='center', va='center', fontsize=10, weight='bold'
-             )
+    # Plot the vertical lines
+    for pos, dosage in zip(positions, numeric_genotype):
+        if np.isnan(dosage):
+            color = MISSING_COLOR
+            linestyle = '--'
+            linewidth = 1.0
+        else:
+            dosage = int(dosage) # Dosage is 0, 1, or 2
+            color = color_map.get(dosage, MISSING_COLOR) # Use MISSING_COLOR as a fallback
+            linestyle = '-'
+            linewidth = 2.0
+            
+        # Draw a vertical line from y=0 to y=LINE_HEIGHT at the marker's position (pos)
+        ax.vlines(
+            pos, 
+            0, 
+            LINE_HEIGHT, 
+            color=color, 
+            linewidth=linewidth, 
+            linestyle=linestyle, 
+            alpha=0.8
+        )
     
     # --- Add Marker IDs below the plot ---
-    # We will use the tick labels on the bottom-most plot (axs[2]) for the marker IDs
-    # Set X ticks to be the center of the marker blocks
-    tick_positions = positions + widths / 2
-    
-    axs[2].set_xticks(tick_positions)
-    axs[2].set_xticklabels(marker_ids, rotation=90, fontsize=6, ha='center')
+    # Set X ticks to be the marker positions (no need for width calculation)
+    ax.set_xticks(positions)
+    ax.set_xticklabels(marker_ids, rotation=90, fontsize=6, ha='center')
 
     # --- Clean Plot & Final Styling ---
-    for i, ax in enumerate(axs):
-        ax.set_xlim(positions.min(), positions.max() + widths[-1])
-        ax.set_ylim(0, 1)
-        ax.set_yticks([])
-        ax.set_yticklabels([])
-        
-        # Remove X ticks/labels from top two plots
-        if i < 2:
-             ax.tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)
-
-    axs[2].set_xlabel(f"Marker ID (Position: {'cM' if pos_col in ['cM_pos', 'cumpos_M'] else 'bp'})", fontsize=12)
+    # The X-axis should span from the start to the end of the markers
+    ax.set_xlim(positions.min() - (positions.max() - positions.min()) * 0.01, 
+                positions.max() + (positions.max() - positions.min()) * 0.01)
+    
+    ax.set_xlabel(f"Marker ID (Position: {'cM' if pos_col in ['cM_pos', 'cumpos_M'] else 'bp'})", fontsize=12)
 
     # Add a legend
     legend_handles = [
-        mpatches.Patch(color='skyblue', label='Ancestry 0'),
-        mpatches.Patch(color='salmon', label='Ancestry 1')
+        mpatches.Patch(color='blue', label='0 (0/0)'),
+        mpatches.Patch(color='purple', label= '1(0/1 or 1/0)'),
+        mpatches.Patch(color='red', label='2 (1/1)'),
+        mpatches.Patch(color='grey', label='Missing Data')
     ]
     
     fig.legend(
@@ -2481,22 +2487,22 @@ def plot_chromosome_ancestry(
         loc='upper right',
         bbox_to_anchor=(0.95, 0.95), 
         frameon=True,
-        title="Ancestral Origin"
+        title="Genotype"
     )
+    
 
     # --- File Saving and Directory Check ---
     output_dir = os.path.dirname(output_path)
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
         
-    # Adjust layout to prevent rotated marker IDs from overlapping the bottom edge
     plt.tight_layout(rect=[0, 0, 0.88, 0.95])
     plt.subplots_adjust(bottom=0.25) # Give extra space for rotated labels
     
     plt.savefig(output_path, dpi=300)
     plt.close()
 
-    print(f"Ancestry block track saved → {output_path}")
+    print(f"Ancestry dosage track saved → {output_path}")
 
 def parse_list_or_value(input_str, num_markers):
     """
@@ -3141,7 +3147,7 @@ if args.output_locus:
 # Dynamically select the target individual (Last generation, First individual)
 #last_gen_label = crossing_plan[-1]['offspring_label']
 #TARGET_INDIVIDUAL_ID = f"{last_gen_label}_1"
-TARGET_INDIVIDUAL_ID = f"P2_2"
+TARGET_INDIVIDUAL_ID = f"P1_2"
 
 #TARGET_INDIVIDUAL_ID = f"P1_1"
 TARGET_CHROMOSOME = 1
