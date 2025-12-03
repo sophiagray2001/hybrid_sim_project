@@ -1273,27 +1273,29 @@ def validate_genotypes(
     # 3. Success: return the clean, integer array
     return genotypes
 
-def compile_locus_data_to_df(populations_dict: Dict[str, 'Population']) -> pd.DataFrame:
+def compile_locus_data_to_df(populations_dict: Dict[str, 'Population'],
+                             marker_map_data_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Compiles all individual genotypes from all populations into a single 
-    long-format DataFrame suitable for output and plotting.
+    Compiles all individual genotypes into a long-format DataFrame AND
+    attaches real marker names from the map (LocusName) instead of marker_index.
     
-    Expected Columns: ['individual_id', 'chromosome', 'marker_index', 'hapA', 'hapB']
+    Output columns:
+        ['individual_id', 'chromosome', 'LocusName', 'haplotype_A', 'haplotype_B']
     """
+
     all_data = []
     
+    # marker_index → LocusName lookup
+    index_to_name = marker_map_data_df.set_index("marker_index")["LocusName"]
+
     # Iterate through each population (P0, F1, BC1, etc.)
     for pop_label, population in populations_dict.items():
-        
-        # Iterate through each individual in the population
+
         for individual_id, individual in population.individuals.items():
-            
-            # Iterate through each chromosome in the individual's genome
+
             for chrom_id, (hapA_array, hapB_array) in individual.genome.chromosomes.items():
                 n_markers = len(hapA_array)
-                
-                # Create a temporary DataFrame for this chromosome/individual
-                # Since marker positions are implicit by index, we use marker_index
+
                 temp_df = pd.DataFrame({
                     'individual_id': [individual_id] * n_markers,
                     'chromosome': [chrom_id] * n_markers,
@@ -1301,23 +1303,49 @@ def compile_locus_data_to_df(populations_dict: Dict[str, 'Population']) -> pd.Da
                     'haplotype_A': hapA_array,
                     'haplotype_B': hapB_array
                 })
+
+                # Add real LocusName from map
+                temp_df["LocusName"] = temp_df["marker_index"].map(index_to_name)
+
                 all_data.append(temp_df)
 
     if not all_data:
-        return pd.DataFrame(columns=['individual_id', 'chromosome', 'marker_index', 'hapA', 'hapB'])
-        
-    return pd.concat(all_data, ignore_index=True)
+        return pd.DataFrame(columns=[
+            'individual_id','chromosome','LocusName','haplotype_A','haplotype_B'
+        ])
+
+    df = pd.concat(all_data, ignore_index=True)
+
+    # Drop marker_index unless you want to keep it
+    df = df.drop(columns=["marker_index"])
+
+    # Reorder final columns
+    df = df[[
+        "individual_id",
+        "chromosome",
+        "LocusName",
+        "haplotype_A",
+        "haplotype_B"
+    ]]
+
+    return df
 
 def read_marker_map(map_file_path: str, args: argparse.Namespace, genotype_marker_list: list = None) -> list:
     """
-    Loads a map file, cleans marker names, preserves file order, and
-    filters markers based on those present in the genotype file.
+    Loads a map file, cleans marker names, preserves file order,
+    and filters markers based on those present in the genotype file.
 
-    Fully patched version — handles real multi-column map structure.
+    This version preserves original map structure:
+        - Keeps 'cM' if present
+        - Keeps 'position' if present
+        - Does NOT rename either column
     """
 
+    import pandas as pd
+    import numpy as np
+
     # ------------------------------------------------------------
-    # SAFE READ: read entire CSV, do not force usecols
+    # SAFE READ
     # ------------------------------------------------------------
     try:
         df = pd.read_csv(map_file_path)
@@ -1325,56 +1353,80 @@ def read_marker_map(map_file_path: str, args: argparse.Namespace, genotype_marke
         raise IOError(f"Error reading map file {map_file_path}: {e}")
 
     # ------------------------------------------------------------
-    # VALIDATE REQUIRED COLUMNS
+    # DETECT IMPORTANT COLUMNS (FLEXIBLE NAMING)
     # ------------------------------------------------------------
-    # Real biological map files usually contain these:
-    # LocusNumber, LocusNameOLD, LocusName, chromosome, cM, scaffold, position
-    required_cols = {
+    col_map = {
         "LocusName": None,
         "chromosome": None,
-        "position": None
+        "cM": None,
+        "position": None,
     }
 
-    # Map flexible column names → standard names
     for col in df.columns:
         cname = col.strip().replace(" ", "").upper()
 
         if cname == "LOCUSNAME":
-            required_cols["LocusName"] = col
-        elif cname in ("CHR","CHROM","CHROMOSOME"):
-            required_cols["chromosome"] = col
-        elif cname in ("POS","POSITION","BP"):
-            required_cols["position"] = col
+            col_map["LocusName"] = col
 
-    # Check if LocusName found
-    if required_cols["LocusName"] is None:
-        raise ValueError("ERROR: No column matching 'LocusName' found in your map file.")
+        elif cname in ("CHR", "CHROM", "CHROMOSOME"):
+            col_map["chromosome"] = col
+
+        elif cname in ("CM", "CENTIMORGAN"):
+            col_map["cM"] = col
+
+        elif cname in ("POS", "POSITION", "BP"):
+            col_map["position"] = col
+
+    # MUST HAVE LocusName
+    if col_map["LocusName"] is None:
+        raise ValueError("ERROR: No column matching 'LocusName' found in map file.")
+
+    # MUST HAVE chromosome
+    if col_map["chromosome"] is None:
+        raise ValueError("ERROR: No chromosome column found in map file.")
+
+    # At least ONE coordinate must exist
+    if col_map["cM"] is None and col_map["position"] is None:
+        raise ValueError("ERROR: Map file must contain either a 'cM' column or a 'position' column.")
 
     # ------------------------------------------------------------
-    # SELECT ONLY THE NECESSARY COLUMNS
+    # SELECT ONLY NECESSARY COLUMNS
+    # (Keep original names for cM/position)
     # ------------------------------------------------------------
-    df = df[[required_cols["LocusName"], required_cols["chromosome"], required_cols["position"]]]
+    use_cols = [col_map["LocusName"], col_map["chromosome"]]
 
-    df.columns = ["LocusName", "chromosome", "position"]
+    if col_map["cM"] is not None:
+        use_cols.append(col_map["cM"])
+    if col_map["position"] is not None:
+        use_cols.append(col_map["position"])
+
+    df = df[use_cols]
+
+    # Now rename *only* LocusName + chromosome
+    rename_dict = {
+        col_map["LocusName"]: "LocusName",
+        col_map["chromosome"]: "chromosome",
+    }
+    df = df.rename(columns=rename_dict)
 
     # ------------------------------------------------------------
-    # AGGRESSIVE NORMALIZATION OF LocusName (matches genotype cleaning)
+    # NORMALIZE MARKER NAMES
     # ------------------------------------------------------------
     df["LocusName"] = (
         df["LocusName"]
         .astype(str)
         .str.strip()
-        .str.replace('\ufeff', '', regex=False)
+        .str.replace("\ufeff", "", regex=False)
         .str.replace(" ", "", regex=False)
         .str.upper()
     )
 
     # ------------------------------------------------------------
-    # FILTER AGAINST GENOTYPE MARKER LIST
+    # FILTER AGAINST GENOTYPE MARKERS
     # ------------------------------------------------------------
     if genotype_marker_list is not None:
         genotype_clean = [
-            m.strip().replace(" ", "").replace('\ufeff', "").upper()
+            m.strip().replace(" ", "").replace("\ufeff", "").upper()
             for m in genotype_marker_list
         ]
 
@@ -1384,26 +1436,22 @@ def read_marker_map(map_file_path: str, args: argparse.Namespace, genotype_marke
 
         if filtered_n == 0:
             raise ValueError(
-                "CRITICAL ERROR: No markers matched between genotype file and map file\n"
+                "CRITICAL ERROR: No markers matched between genotype file and map file.\n"
                 "→ Most common cause: inconsistent normalization or wrong map."
             )
 
         if initial_n != filtered_n:
-            print(
-                f"INFO: Filtered map from {initial_n} to {filtered_n} markers "
-                f"based on genotype file."
-            )
+            print(f"INFO: Filtered map from {initial_n} to {filtered_n} markers based on genotype file.")
 
     # ------------------------------------------------------------
-    # HANDLE MISSING CHROMOSOMES
+    # HANDLE MISSING CHROMOSOME INFO
     # ------------------------------------------------------------
     if df["chromosome"].isnull().all():
         num_markers = len(df)
         num_chrs = getattr(args, "num_chrs", 1)
 
         markers_per_chr = [num_markers // num_chrs] * num_chrs
-        remainder = num_markers % num_chrs
-        for i in range(remainder):
+        for i in range(num_markers % num_chrs):
             markers_per_chr[i] += 1
 
         chrom_list = []
@@ -1414,26 +1462,18 @@ def read_marker_map(map_file_path: str, args: argparse.Namespace, genotype_marke
         print(f"WARNING: Missing chromosome info. Assigned {num_chrs} chromosomes.")
 
     # ------------------------------------------------------------
-    # HANDLE MISSING BASE-PAIR POSITIONS
-    # ------------------------------------------------------------
-    if df["position"].isnull().all():
-        num_markers = len(df)
-
-        if getattr(args, "map_generate", False):
-            df["position"] = np.random.uniform(1.0, 100_000_000.0, num_markers)
-            print("Generating random base-pair positions (--map_generate).")
-        else:
-            df["position"] = np.arange(1, num_markers + 1)
-            print("Missing 'position'. Generated uniform positions in file order.")
-
-    # ------------------------------------------------------------
     # TYPE ENFORCEMENT
     # ------------------------------------------------------------
     df["chromosome"] = pd.to_numeric(df["chromosome"], errors="coerce").astype(int)
-    df["position"] = pd.to_numeric(df["position"], errors="coerce")
+
+    if col_map["cM"] is not None:
+        df[col_map["cM"]] = pd.to_numeric(df[col_map["cM"]], errors="coerce")
+
+    if col_map["position"] is not None:
+        df[col_map["position"]] = pd.to_numeric(df[col_map["position"]], errors="coerce")
 
     # ------------------------------------------------------------
-    # RETURN LIST OF DICTS (PRESERVE FILE ORDER)
+    # FINALIZE
     # ------------------------------------------------------------
     df = df.reset_index(drop=True)
     return df.to_dict("records")
@@ -2386,173 +2426,133 @@ def plot_chromosome_ancestry(
     p0_genotype_df,
     marker_map_df,
     target_individual,
-    target_chr,
     output_path
 ):
     """
-    Ancestry-dosage plot for a chromosome using colored vertical lines (markers)
-    to emphasize the overall ancestry dosage (0, 1, or 2) along the genetic map distance.
-    (New: Single track for Genotype/Dosage only.)
+    Plot ALL chromosomes for one individual.
+    X-axis = chromosome index (integer columns)
+    Y-axis = map position (cM or bp)
+    Each marker is drawn as a small horizontal tick mark
+    colored by ancestry dosage.
     """
 
-    # Define colors for the ancestry dosage (0=Ancestry A/A, 1=A/B, 2=B/B, -1=Missing)
-    # 0 = Blue (Ancestry A/A)
-    # 1 = Purple (Ancestry A/B or B/A)
-    # 2 = Red (Ancestry B/B)
-    # NaN/Missing = Grey
-    
+    # --------------------------
+    # 0. Color definitions
+    # --------------------------
     color_map = {
-        0: 'blue',
-        1: 'purple',
-        2: 'red',
+        0: 'blue',     # 0/0
+        1: 'purple',   # 0/1
+        2: 'red'       # 1/1
     }
     MISSING_COLOR = 'grey'
-    LINE_HEIGHT = 1.0 # The height of the marker line
 
-    # ------------------------------
-    # 1. Filter map for chromosome and sort by position (same as before)
-    # ------------------------------
-    map_chr = marker_map_df[marker_map_df["chromosome"] == target_chr].copy()
-    if map_chr.empty:
-        print(f" No markers found for chromosome {target_chr}")
-        return
+    # --------------------------
+    # 1. Clean and verify map
+    # --------------------------
+    if "chromosome" not in marker_map_df.columns:
+        raise ValueError("marker_map_df must contain 'chromosome' column")
 
-    if "marker_index" not in map_chr.columns:
-        map_chr = map_chr.reset_index().rename(columns={"index": "marker_index"})
-    
-    if "LocusName" not in map_chr.columns:
-        map_chr['LocusName'] = map_chr['marker_index'].astype(str).apply(lambda x: f"M_{x}")
-    
-    possible_cols = ["cM", "cumpos_M", "position", "position"]
-    pos_col = next((c for c in possible_cols if c in map_chr.columns), None)
+    # Identify position column
+    pos_col = None
+    for c in ["cM", "position"]:
+        if c in marker_map_df.columns:
+            pos_col = c
+            break
 
     if pos_col is None:
-        print(" No usable position column found in map.")
+        raise ValueError("No usable position column found in map.")
+
+    map_df = marker_map_df.copy()
+    map_df[pos_col] = pd.to_numeric(map_df[pos_col], errors="coerce")
+    map_df = map_df.dropna(subset=[pos_col])
+
+    # Ensure marker_index exists
+    if "marker_index" not in map_df.columns:
+        map_df = map_df.reset_index().rename(columns={"index": "marker_index"})
+        map_df["marker_index"] = map_df["marker_index"].astype(int)
+
+    # Chromosome list in sorted order
+    chromosomes = sorted(map_df["chromosome"].unique())
+
+    # --------------------------
+    # 2. Extract genotype rows for the individual
+    # --------------------------
+    indiv_df = p0_genotype_df[p0_genotype_df["individual_id"] == target_individual].copy()
+    if indiv_df.empty:
+        print(f"No genotype data found for individual {target_individual}")
         return
 
-    # Clean and sort CRITICAL: Ensure map is sorted by position
-    map_chr[pos_col] = pd.to_numeric(map_chr[pos_col], errors="coerce")
-    map_chr = map_chr.dropna(subset=[pos_col]).sort_values(pos_col).reset_index(drop=True)
-
-    marker_indices = map_chr["marker_index"].astype(int).tolist()
-    positions = map_chr[pos_col].values
-    marker_ids = map_chr["LocusName"].values
-    
-    print(f"Using '{pos_col}' (cM/M/bp) as positional coordinate for markers.")
-
-    # ------------------------------
-    # 2. Filter and align genotype data (same as before)
-    # ------------------------------
-    gen_df = p0_genotype_df[
-        (p0_genotype_df["individual_id"] == target_individual) &
-        (p0_genotype_df["chromosome"] == target_chr)
-    ].copy()
-
-    if gen_df.empty:
-        print(f"No genotype data for {target_individual} chr {target_chr}")
-        return
-
-    hapA_col = next((c for c in ["haplotype_A", "hapA"] if c in gen_df.columns), None)
-    hapB_col = next((c for c in ["haplotype_B", "hapB"] if c in gen_df.columns), None)
+    hapA_col = next((c for c in ["haplotype_A", "hapA"] if c in indiv_df.columns), None)
+    hapB_col = next((c for c in ["haplotype_B", "hapB"] if c in indiv_df.columns), None)
 
     if hapA_col is None or hapB_col is None:
-        print("Haplotype columns not found.")
-        return
+        raise ValueError("Haplotype columns not found (expected 'haplotype_A' and 'haplotype_B').")
 
-    # Align genotype rows using the sorted map indices
-    gen_df["marker_index"] = pd.to_numeric(gen_df["marker_index"], errors="coerce").astype('Int64')
-    gen_df = gen_df.dropna(subset=["marker_index"])
-    gen_df = gen_df.drop_duplicates(subset=["marker_index"], keep="first")
-    gen_df = gen_df.set_index("marker_index").reindex(marker_indices)
+    indiv_df["marker_index"] = pd.to_numeric(indiv_df["marker_index"], errors="coerce").astype("Int64")
 
-    # Extract haplotypes (ancestry is 0 or 1)
-    hapA_raw = gen_df[hapA_col].replace({np.nan: -1}).astype(int).values
-    hapB_raw = gen_df[hapB_col].replace({np.nan: -1}).astype(int).values
-    
-    # Calculate the numeric genotype (dosage: 0, 1, or 2)
-    # The sum (hapA + hapB) gives the count of Ancestry '1' alleles.
-    numeric_genotype = (hapA_raw + hapB_raw).astype(float)
-    
-    # Check for missing data. If EITHER hapA or hapB is missing (-1), the dosage is NaN (missing).
-    # Since missing data was replaced with -1, if the sum is -2, it's 0/0 (dosage 0).
-    # If the sum is -1, one is missing (e.g., -1 + 0 or -1 + 1), so it should be NaN.
-    # The easiest way is to re-apply NaN if the original raw data had a -1.
-    missing_mask = np.where((hapA_raw == -1) | (hapB_raw == -1))
-    numeric_genotype[missing_mask] = np.nan
-    
-    # ------------------------------
-    # 3. Plot (Vertical Line Style)
-    # ------------------------------
-    fig, ax = plt.subplots(1, 1, figsize=(14, 4)) # Single track plot
+    # --------------------------
+    # 3. Build the plotting structure
+    # --------------------------
+    plot_records = []  # (chrom_col_index, y_position, color)
 
-    #ax.set_title(f"Genotype Dosage Track for {target_individual} on Chromosome {target_chr}", fontsize=14)
-    ax.set_ylim(0, LINE_HEIGHT)
-    ax.set_yticks([]) # Remove Y-axis labels and ticks
+    for chrom_i, chrom in enumerate(chromosomes, start=1):
+        map_chr = map_df[map_df["chromosome"] == chrom].sort_values(pos_col)
 
-    # Plot the vertical lines
-    for pos, dosage in zip(positions, numeric_genotype):
-        if np.isnan(dosage):
-            color = MISSING_COLOR
-            linestyle = '--'
-            linewidth = 1.0
-        else:
-            dosage = int(dosage) # Dosage is 0, 1, or 2
-            color = color_map.get(dosage, MISSING_COLOR) # Use MISSING_COLOR as a fallback
-            linestyle = '-'
-            linewidth = 2.0
-            
-        # Draw a vertical line from y=0 to y=LINE_HEIGHT at the marker's position (pos)
-        ax.vlines(
-            pos, 
-            0, 
-            LINE_HEIGHT, 
-            color=color, 
-            linewidth=linewidth, 
-            linestyle=linestyle, 
-            alpha=0.8
-        )
-    
-    # --- Add Marker IDs below the plot ---
-    # Set X ticks to be the marker positions (no need for width calculation)
-    ax.set_xticks(positions)
-    ax.set_xticklabels(marker_ids, rotation=90, fontsize=6, ha='center')
+        # Join genotype for this chromosome
+        geno_chr = indiv_df[indiv_df["chromosome"] == chrom].set_index("marker_index")
 
-    # --- Clean Plot & Final Styling ---
-    # The X-axis should span from the start to the end of the markers
-    ax.set_xlim(positions.min() - (positions.max() - positions.min()) * 0.01, 
-                positions.max() + (positions.max() - positions.min()) * 0.01)
-    
-    ax.set_xlabel(f"Marker ID (Position: {'cM' if pos_col in ['cM', 'cumpos_M'] else 'bp'})", fontsize=12)
+        for _, row in map_chr.iterrows():
+            m_idx = row["marker_index"]
+            pos = row[pos_col]
 
-    # Add a legend
+            # get dosage
+            if m_idx in geno_chr.index:
+                hapA = int(geno_chr.at[m_idx, hapA_col])
+                hapB = int(geno_chr.at[m_idx, hapB_col])
+
+                if hapA == -1 or hapB == -1:
+                    color = MISSING_COLOR
+                else:
+                    dosage = hapA + hapB  # 0,1,2
+                    color = color_map.get(dosage, MISSING_COLOR)
+            else:
+                color = MISSING_COLOR
+
+            plot_records.append((chrom_i, pos, color))
+
+    # --------------------------
+    # 4. Make the plot
+    # --------------------------
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    # Draw one vertical black line per chromosome
+    for chrom_i in range(1, len(chromosomes) + 1):
+        ax.vlines(chrom_i, 0, map_df[pos_col].max(), color="black", linewidth=1.5)
+
+    # Draw horizontal colored tick marks
+    for chrom_i, pos, color in plot_records:
+        ax.hlines(pos, chrom_i - 0.4, chrom_i + 0.4, color=color, linewidth=2)
+
+    ax.set_xticks(range(1, len(chromosomes) + 1))
+    ax.set_xticklabels([str(c) for c in chromosomes], fontsize=12)
+    ax.set_xlabel("Chromosome", fontsize=14)
+    ax.set_ylabel(pos_col, fontsize=14)
+    ax.set_title(f"Markers Across All Chromosomes - {target_individual}", fontsize=16)
+
+    # Legend
     legend_handles = [
-        mpatches.Patch(color='blue', label='0 (0/0)'),
-        mpatches.Patch(color='purple', label= '1(0/1 or 1/0)'),
-        mpatches.Patch(color='red', label='2 (1/1)'),
-        mpatches.Patch(color='grey', label='Missing Data')
+        mpatches.Patch(color='blue', label='0'),
+        mpatches.Patch(color='purple', label='1'),
+        mpatches.Patch(color='red', label='2'),
+        mpatches.Patch(color='grey', label='Missing')
     ]
-    
-    fig.legend(
-        handles=legend_handles,
-        loc='upper right',
-        bbox_to_anchor=(0.95, 0.95), 
-        frameon=True,
-        title="Genotype"
-    )
-    
+    ax.legend(handles=legend_handles, loc="upper right")
 
-    # --- File Saving and Directory Check ---
-    output_dir = os.path.dirname(output_path)
-    if output_dir and not os.path.exists(output_dir):
-        os.makedirs(output_dir, exist_ok=True)
-        
-    plt.tight_layout(rect=[0, 0, 0.88, 0.95])
-    plt.subplots_adjust(bottom=0.25) # Give extra space for rotated labels
-    
+    plt.tight_layout()
     plt.savefig(output_path, dpi=300)
     plt.close()
 
-    print(f"Ancestry dosage track saved → {output_path}")
+    print(f"Full ancestry genome plot saved to {output_path}")
 
 def parse_list_or_value(input_str, num_markers):
     """
@@ -2652,6 +2652,53 @@ def get_position_column(df):
             return col
 
     return None
+
+def generate_offspring_wide_from_locus(locus_df: pd.DataFrame, output_path: str,
+                                       id_col: str = 'individual_id',
+                                       parent_cols: list = ['PlantID', 'RametIDs']) -> pd.DataFrame:
+    """
+    Converts long-format locus genotype DataFrame into wide-format with dosage scores.
+    
+    Arguments:
+        locus_df: pd.DataFrame
+            Long-format DataFrame with columns ['individual_id', 'chromosome', 'LocusName', 'haplotype_A', 'haplotype_B']
+        output_path: str
+            Path to save the wide CSV
+        id_col: str
+            Column identifying the individual
+        parent_cols: list of str
+            Columns to include as parent/plant identifiers if present
+    """
+    
+    df = locus_df.copy()
+    
+    # Compute dosage
+    def compute_dosage(row):
+        a, b = row['haplotype_A'], row['haplotype_B']
+        if a == -1 or b == -1:
+            return -10
+        return a + b  # 0+0=0, 0+1=1, 1+0=1, 1+1=2
+    
+    df['dosage'] = df.apply(compute_dosage, axis=1)
+    
+    # Keep only necessary columns
+    keep_cols = [id_col, 'LocusName', 'dosage'] + [c for c in parent_cols if c in df.columns]
+    df = df[[c for c in keep_cols if c in df.columns]]
+    
+    # Pivot to wide format
+    wide_df = df.pivot_table(index=[id_col] + [c for c in parent_cols if c in df.columns],
+                             columns='LocusName',
+                             values='dosage',
+                             aggfunc='first')  # just take first in case of duplicates
+    
+    # Flatten columns
+    wide_df.reset_index(inplace=True)
+    
+    # Save
+    wide_df.to_csv(output_path, index=False)
+    print(f"Offspring wide-format genotype CSV saved to: {output_path}")
+    
+    return wide_df
 
 def handle_outputs(args, hi_het_data, p0_genotype_df=None):
     """
@@ -3179,17 +3226,7 @@ except Exception as e:
     traceback.print_exc()
     exit(1)
 
-print(f"--- CROSSING FINISHED. Populations: {list(recomb_simulator.populations_dict.keys())} ---\n")
-
-# ===========================================================================================
-#   COMPILE LOCUS GENOTYPES FOR VISUALIZATION
-# ===========================================================================================
-print("Compiling locus genotype data for visualization and output...")
-try:
-    locus_genotype_df = compile_locus_data_to_df(recomb_simulator.populations_dict)
-except Exception as e:
-    print(f"FATAL ERROR: compile_locus_data_to_df not found. Error: {e}")
-    exit(1)
+print(f"CROSSING FINISHED. Populations: {list(recomb_simulator.populations_dict.keys())}\n")
 
 # ===========================================================================================
 #   PREPARE MAP DF FOR VISUALIZATION
@@ -3198,13 +3235,22 @@ marker_map_data_df = pd.DataFrame(known_markers_data)
 marker_map_data_df["marker_index"] = marker_map_data_df.index.to_numpy()
 print("Added 'marker_index' column to map data for alignment with locus data.")
 
-if "cM" in marker_map_data_df.columns:
-    marker_map_data_df = marker_map_data_df.rename(columns={"cM": "position"})
-elif "position" in marker_map_data_df.columns:
-    marker_map_data_df = marker_map_data_df.rename(columns={"position": "position"})
-    print("Warning: 'cM' not found in map. Using 'position' for plotting.")
-else:
-    raise ValueError("Marker map must contain 'cM' or 'position' for visualization.")
+# Do NOT rename anything. Keep both if they exist.
+has_cM = "cM" in marker_map_data_df.columns
+has_bp = "position" in marker_map_data_df.columns
+
+if not has_cM and not has_bp:
+    raise ValueError("Marker map must contain either a 'cM' or 'position' column for visualization.")
+
+# ===========================================================================================
+#   COMPILE LOCUS GENOTYPES FOR VISUALIZATION
+# ===========================================================================================
+print("Compiling locus genotype data for visualization and output...")
+try:
+    locus_genotype_df = compile_locus_data_to_df(recomb_simulator.populations_dict, marker_map_data_df)
+except Exception as e:
+    print(f"FATAL ERROR: compile_locus_data_to_df not found. Error: {e}")
+    exit(1)
 
 # ===========================================================================================
 #   SAVE LOCUS GENOTYPE DATA
@@ -3218,12 +3264,33 @@ if args.output_locus:
     print(f"Locus genotype data saved to: {locus_csv}")
 
 # ===========================================================================================
+#   SAVE OFFSPRING WIDE-FORMAT GENOTYPE DATA
+# ===========================================================================================
+offspring_csv = os.path.join(output_dir, f"{args.output_name}_offspring_genotypes.csv")
+
+# Only do this if there are offspring individuals (exclude P0)
+offspring_locus_df = locus_genotype_df[~locus_genotype_df['individual_id'].str.startswith("P0")].copy()
+
+if not offspring_locus_df.empty:
+    try:
+        df_offspring = generate_offspring_wide_from_locus(
+            locus_df=offspring_locus_df,
+            output_path=offspring_csv,
+            id_col='individual_id',
+            parent_cols=['PlantID', 'RametIDs']  # adjust if these columns exist in your locus_df
+        )
+    except Exception as e:
+        print(f"WARNING: Failed to generate offspring wide-format CSV: {e}")
+    else:
+        print(f"Offspring wide-format genotype CSV saved to: {offspring_csv}")
+else:
+    print("No offspring individuals detected. Skipping wide-format CSV generation.")
+
 #   CHR VISUALIZATION
 # ===========================================================================================
 TARGET_INDIVIDUAL_ID = "P1_2"
-TARGET_CHROMOSOME = 1
 
-print(f"Generating ancestry visualization for {TARGET_INDIVIDUAL_ID} chr {TARGET_CHROMOSOME}...")
+print(f"Generating full-genome ancestry visualization for {TARGET_INDIVIDUAL_ID}...")
 
 try:
     reloaded_locus_genotype_df = pd.read_csv(locus_csv)
@@ -3232,8 +3299,7 @@ try:
         reloaded_locus_genotype_df,
         marker_map_data_df,
         TARGET_INDIVIDUAL_ID,
-        TARGET_CHROMOSOME,
-        f"simulation_outputs/results/ancestry_track_chr{TARGET_CHROMOSOME}_{TARGET_INDIVIDUAL_ID}_{args.output_name}.png"
+        f"simulation_outputs/results/ancestry_fullgenome_{TARGET_INDIVIDUAL_ID}_{args.output_name}.png"
     )
 except Exception as e:
     print(f"Visualization skipped: {e}")
