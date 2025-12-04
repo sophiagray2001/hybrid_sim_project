@@ -2440,7 +2440,7 @@ def plot_chromosome_ancestry_wide(
         mpatches.Patch(color='red', label='2'),
         mpatches.Patch(color='grey', label='Missing')
     ]
-    ax.legend(handles=legend_handles, loc='upper right')
+    ax.legend(handles=legend_handles, loc='best')
 
     plt.tight_layout()
     plt.savefig(output_path, dpi=300)
@@ -2465,6 +2465,7 @@ def plot_trio_genomes_wide(
     if "chromosome" not in marker_map_df.columns:
         raise ValueError("marker_map_df must contain 'chromosome' column")
 
+    # Determine position column
     pos_col = None
     for c in ["cM", "position"]:
         if c in marker_map_df.columns:
@@ -2473,6 +2474,7 @@ def plot_trio_genomes_wide(
     if pos_col is None:
         raise ValueError("marker_map_df must contain 'cM' or 'position'.")
 
+    # Prepare map
     map_df = marker_map_df.copy()
     map_df[pos_col] = pd.to_numeric(map_df[pos_col], errors='coerce')
     map_df = map_df.dropna(subset=[pos_col])
@@ -2485,6 +2487,7 @@ def plot_trio_genomes_wide(
     chr_pos_max = map_df.groupby('chromosome')[pos_col].max().to_dict()
     use_locus_name = ('LocusName' in map_df.columns)
 
+    # Build data for each individual
     def build_plot_records(ind_id):
         if ind_id not in wide_genotype_df[id_col].values:
             print(f"Individual {ind_id} not found — skipping.")
@@ -2511,41 +2514,56 @@ def plot_trio_genomes_wide(
                 else:
                     color = MISSING_COLOR
 
-                records.append((chrom_i, pos, color))
+                # store as (pos_x, chrom_y, color)
+                records.append((pos, chrom_i, color))
 
         return records
 
-    trio_ids = [parent1_id, parent2_id, offspring_id]
-    trio_records = {ind: build_plot_records(ind) for ind in trio_ids}
+    trio_ids = ["Parent 1", "Parent 2", "Offspring"]
+    trio_inds = [parent1_id, parent2_id, offspring_id]
+    trio_records = {label: build_plot_records(ind) for label, ind in zip(trio_ids, trio_inds)}
 
-    if layout == 'horizontal':
-        fig, axes = plt.subplots(1, 3, figsize=(24, 7), sharey=True)
+    # Layout options
+    if layout == "horizontal":
+        fig, axes = plt.subplots(1, 3, figsize=(28, 7), sharey=True)
     else:
-        fig, axes = plt.subplots(3, 1, figsize=(12, 18), sharex=True)
+        fig, axes = plt.subplots(3, 1, figsize=(14, 20), sharex=True)
 
-    for ax, ind in zip(axes, trio_ids):
-        records = trio_records[ind]
+    # Plot each person
+    for ax, label, ind in zip(axes, trio_ids, trio_inds):
+        records = trio_records[label]
         if records is None:
             continue
 
+        # Draw chromosome spines horizontally
         for chrom_i, chrom in enumerate(chromosomes, start=1):
-            ax.vlines(chrom_i, 0, chr_pos_max[chrom], color='black', linewidth=1.3)
+            ax.hlines(
+                chrom_i,
+                xmin=0,
+                xmax=chr_pos_max[chrom],
+                color="black",
+                linewidth=1.5
+            )
 
-        for chrom_i, pos, color in records:
-            ax.hlines(pos, chrom_i - 0.4, chrom_i + 0.4, color=color, linewidth=2)
+        # Draw alleles as vertical tick marks
+        for pos, chrom_i, color in records:
+            ax.vlines(pos, chrom_i - 0.3, chrom_i + 0.3, color=color, linewidth=2)
 
-        ax.set_title(ind, fontsize=16)
-        ax.set_ylabel(pos_col, fontsize=14)
-        ax.set_xticks(range(1, len(chromosomes) + 1))
-        ax.set_xticklabels([str(c) for c in chromosomes], fontsize=10)
+        ax.set_title(f"{label} – {ind}", fontsize=18)
+        ax.set_ylabel("Chromosome", fontsize=14)
+        ax.set_ylim(0.5, len(chromosomes) + 0.5)
+        ax.set_yticks(range(1, len(chromosomes) + 1))
+        ax.set_yticklabels([str(c) for c in chromosomes], fontsize=12)
+        ax.set_xlabel(pos_col, fontsize=14)
 
+    # Legend
     legend_handles = [
         mpatches.Patch(color='blue', label='0'),
         mpatches.Patch(color='purple', label='1'),
         mpatches.Patch(color='red', label='2'),
         mpatches.Patch(color='grey', label='Missing')
     ]
-    axes[-1].legend(handles=legend_handles, loc='upper right')
+    axes[0].legend(handles=legend_handles, loc='upper right')
 
     plt.tight_layout()
     plt.savefig(output_path, dpi=300)
@@ -2622,7 +2640,6 @@ def plot_full_pedigree(ancestry_data_df, output_path):
         
     # 3. Plotting (Unchanged)
     plt.figure(figsize=(20, 15))
-    # ... (rest of the plotting code remains the same) ...
     
     plt.title(f"Full Simulation Pedigree (Layout: {layout_method})")
     plt.axis('off')
@@ -3071,7 +3088,7 @@ crossing_plan = build_panmictic_plan(args.num_hybrid_generations, args.target_po
 
 # ..............................
 # 10. RUN SIMULATION
-# -..............................
+# ...............................
 print("\nRunning Simulation")
 
 populations_dict, hi_het_new = simulate_generations(
