@@ -2958,7 +2958,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
 # Define the ID columns used in the workflow (Moved to top of block)
-ID_COLUMNS_TO_EXCLUDE = ["PLANTID", "RAMETIDS"] # * Check positioning of this *
+ID_COLUMNS_TO_EXCLUDE = ["PLANTID", "RAMETIDS"] # * Check positioning of this 
 
 # START OF MAIN EXECUTION BLOCK
 print(f"\nStarting Simulation Replicate {args.replicate_id}")
