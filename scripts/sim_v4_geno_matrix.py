@@ -2448,7 +2448,6 @@ def plot_chromosome_ancestry_wide(
 
     print(f"Full ancestry genome plot saved to {output_path}")
 
-
 def plot_trio_genomes_wide(
     wide_genotype_df,
     marker_map_df,
@@ -2571,7 +2570,6 @@ def plot_trio_genomes_wide(
 
     print(f"Trio genome comparison plot saved to {output_path}")
 
-
 def parse_list_or_value(input_str, num_markers):
     """
     Parses:
@@ -2670,51 +2668,59 @@ def get_position_column(df):
 
     return None
 
-def generate_offspring_wide_from_locus(locus_df: pd.DataFrame, output_path: str,
-                                       id_col: str = 'individual_id',
-                                       parent_cols: list = ['PlantID', 'RametIDs']) -> pd.DataFrame:
+def generate_offspring_wide_from_locus(
+        locus_df: pd.DataFrame,
+        map_df: pd.DataFrame,
+        output_path: str,
+        id_col: str = 'individual_id',
+        parent_cols: list = ['PlantID', 'RametIDs']
+    ) -> pd.DataFrame:
     """
-    Converts long-format locus genotype DataFrame into wide-format with dosage scores.
-    
-    Arguments:
-        locus_df: pd.DataFrame
-            Long-format DataFrame with columns ['individual_id', 'chromosome', 'LocusName', 'haplotype_A', 'haplotype_B']
-        output_path: str
-            Path to save the wide CSV
-        id_col: str
-            Column identifying the individual
-        parent_cols: list of str
-            Columns to include as parent/plant identifiers if present
+    Convert long-format locus genotypes to wide format and
+    ensure marker columns are ordered exactly like map_df.
     """
-    
+
     df = locus_df.copy()
-    
+
     # Compute dosage
     def compute_dosage(row):
         a, b = row['haplotype_A'], row['haplotype_B']
         if a == -1 or b == -1:
             return -10
-        return a + b  # 0+0=0, 0+1=1, 1+0=1, 1+1=2
-    
+        return a + b
+
     df['dosage'] = df.apply(compute_dosage, axis=1)
-    
-    # Keep only necessary columns
+
+    # Keep only needed columns
     keep_cols = [id_col, 'LocusName', 'dosage'] + [c for c in parent_cols if c in df.columns]
     df = df[[c for c in keep_cols if c in df.columns]]
-    
+
     # Pivot to wide format
-    wide_df = df.pivot_table(index=[id_col] + [c for c in parent_cols if c in df.columns],
-                             columns='LocusName',
-                             values='dosage',
-                             aggfunc='first')  # just take first in case of duplicates
-    
-    # Flatten columns
-    wide_df.reset_index(inplace=True)
-    
-    # Save
+    wide_df = df.pivot_table(
+        index=[id_col] + [c for c in parent_cols if c in df.columns],
+        columns='LocusName',
+        values='dosage',
+        aggfunc='first'
+    ).reset_index()
+
+    # ---- Reorder marker columns to match map_df ----
+    marker_order = list(map_df['LocusName'])
+    present_markers = [m for m in marker_order if m in wide_df.columns]
+
+    # ID + parent columns
+    id_parent_cols = [id_col] + [c for c in parent_cols if c in df.columns]
+
+    # Reconstruct the dataframe with correct column order
+    wide_df = wide_df[id_parent_cols + present_markers]
+
+    # ---- Convert dosage columns to integers ----
+    for m in present_markers:
+        wide_df[m] = wide_df[m].astype(int)
+
+    # Save to CSV
     wide_df.to_csv(output_path, index=False)
     print(f"Offspring wide-format genotype CSV saved to: {output_path}")
-    
+
     return wide_df
 
 def handle_outputs(args, hi_het_data, p0_genotype_df=None): # check why this is not highlighted is it not needed??
@@ -3140,6 +3146,7 @@ if not offspring_df.empty:
     df_off = generate_offspring_wide_from_locus(
         locus_df=offspring_df,
         output_path=offspring_csv,
+        map_df=map_df,
         id_col="individual_id",
         parent_cols=["PLANTID", "RAMETIDS"]
     )
