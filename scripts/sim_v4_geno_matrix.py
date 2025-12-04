@@ -15,7 +15,7 @@ import math
 import ast
 import csv
 import matplotlib.patches as mpatches
-import traceback
+import traceback # Not sure this is needed anymore
 
 # CLASSES
 class Genome:
@@ -53,7 +53,7 @@ class Population:
     A collection of individuals of the same generation or type.
     """
     def __init__(self, label): # Renamed constructor argument to 'label'
-        self.label = label      # CRITICAL FIX: Stored as 'label' to match simulation logic
+        self.label = label      # Stored as 'label' to match simulation logic
         self.individuals = {} # Dictionary to store individuals by their ID
 
     def add_individual(self, individual):
@@ -2448,6 +2448,112 @@ def plot_chromosome_ancestry_wide(
 
     print(f"Full ancestry genome plot saved to {output_path}")
 
+
+def plot_trio_genomes_wide(
+    wide_genotype_df,
+    marker_map_df,
+    parent1_id,
+    parent2_id,
+    offspring_id,
+    output_path,
+    id_col='individual_id',
+    layout='vertical'
+):
+    color_map = {0: 'blue', 1: 'purple', 2: 'red'}
+    MISSING_COLOR = 'grey'
+
+    if "chromosome" not in marker_map_df.columns:
+        raise ValueError("marker_map_df must contain 'chromosome' column")
+
+    pos_col = None
+    for c in ["cM", "position"]:
+        if c in marker_map_df.columns:
+            pos_col = c
+            break
+    if pos_col is None:
+        raise ValueError("marker_map_df must contain 'cM' or 'position'.")
+
+    map_df = marker_map_df.copy()
+    map_df[pos_col] = pd.to_numeric(map_df[pos_col], errors='coerce')
+    map_df = map_df.dropna(subset=[pos_col])
+
+    if 'marker_index' not in map_df.columns:
+        map_df = map_df.reset_index().rename(columns={'index': 'marker_index'})
+        map_df['marker_index'] = map_df['marker_index'].astype(int)
+
+    chromosomes = sorted(map_df['chromosome'].unique())
+    chr_pos_max = map_df.groupby('chromosome')[pos_col].max().to_dict()
+    use_locus_name = ('LocusName' in map_df.columns)
+
+    def build_plot_records(ind_id):
+        if ind_id not in wide_genotype_df[id_col].values:
+            print(f"Individual {ind_id} not found — skipping.")
+            return None
+
+        indiv_row = wide_genotype_df[wide_genotype_df[id_col] == ind_id]
+        indiv_idx = indiv_row.index[0]
+
+        records = []
+        for chrom_i, chrom in enumerate(chromosomes, start=1):
+            map_chr = map_df[map_df['chromosome'] == chrom].sort_values(pos_col)
+
+            for _, row in map_chr.iterrows():
+                marker = row['LocusName'] if use_locus_name else row['marker_index']
+                pos = row[pos_col]
+
+                if marker in indiv_row.columns:
+                    val = indiv_row.at[indiv_idx, marker]
+                    try:
+                        dosage = int(val)
+                        color = color_map.get(dosage, MISSING_COLOR)
+                    except:
+                        color = MISSING_COLOR
+                else:
+                    color = MISSING_COLOR
+
+                records.append((chrom_i, pos, color))
+
+        return records
+
+    trio_ids = [parent1_id, parent2_id, offspring_id]
+    trio_records = {ind: build_plot_records(ind) for ind in trio_ids}
+
+    if layout == 'horizontal':
+        fig, axes = plt.subplots(1, 3, figsize=(24, 7), sharey=True)
+    else:
+        fig, axes = plt.subplots(3, 1, figsize=(12, 18), sharex=True)
+
+    for ax, ind in zip(axes, trio_ids):
+        records = trio_records[ind]
+        if records is None:
+            continue
+
+        for chrom_i, chrom in enumerate(chromosomes, start=1):
+            ax.vlines(chrom_i, 0, chr_pos_max[chrom], color='black', linewidth=1.3)
+
+        for chrom_i, pos, color in records:
+            ax.hlines(pos, chrom_i - 0.4, chrom_i + 0.4, color=color, linewidth=2)
+
+        ax.set_title(ind, fontsize=16)
+        ax.set_ylabel(pos_col, fontsize=14)
+        ax.set_xticks(range(1, len(chromosomes) + 1))
+        ax.set_xticklabels([str(c) for c in chromosomes], fontsize=10)
+
+    legend_handles = [
+        mpatches.Patch(color='blue', label='0'),
+        mpatches.Patch(color='purple', label='1'),
+        mpatches.Patch(color='red', label='2'),
+        mpatches.Patch(color='grey', label='Missing')
+    ]
+    axes[-1].legend(handles=legend_handles, loc='upper right')
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+
+    print(f"Trio genome comparison plot saved to {output_path}")
+
+
 def parse_list_or_value(input_str, num_markers):
     """
     Parses:
@@ -2594,23 +2700,22 @@ def generate_offspring_wide_from_locus(locus_df: pd.DataFrame, output_path: str,
     
     return wide_df
 
-def handle_outputs(args, hi_het_data, p0_genotype_df=None):
+def handle_outputs(args, hi_het_data, p0_genotype_df=None): # check why this is not highlighted is it not needed??
     """
     Handles all output file generation based on command-line flags.
     Reads data from files generated during the simulation and produces plots.
     """
-    # --------------------
+
     # Create output folder
-    # --------------------
     output_dir = os.path.join(args.output_dir, "results")
     os.makedirs(output_dir, exist_ok=True)
 
     # Safe consistent prefix
     output_path_prefix = os.path.join(output_dir, args.output_name)
 
-    # ============================================================
+    # ..............................
     # 1. HI / HET output CSV
-    # ============================================================
+    # ..............................
     hi_het_df = None  # ensures availability later
 
     if args.output_hi_het:
@@ -2624,14 +2729,14 @@ def handle_outputs(args, hi_het_data, p0_genotype_df=None):
         hi_het_df.to_csv(out, index=False)
         print(f"Individual HI/HET table saved to: {out}")
 
-    # ============================================================
+    # ..............................
     # 2. Pedigree plots
-    # ============================================================
+    # ..............................
     if args.pedigree_recording:
 
         pedigree_csv = output_path_prefix + "_pedigree.csv"
 
-        # ---- A: Load the pedigree CSV
+        # A: Load the pedigree CSV
         try:
             if not os.path.exists(pedigree_csv):
                 raise FileNotFoundError(f"Missing pedigree file: {pedigree_csv}")
@@ -2646,7 +2751,7 @@ def handle_outputs(args, hi_het_data, p0_genotype_df=None):
         if ancestry_df.empty:
             print("Warning: Pedigree CSV is empty → skipping all pedigree plots.")
         else:
-            # ---- B: Generate plots
+            # B: Generate plots
             try:
                 # 2B-1 truncated pedigree
                 if args.pedigree_visual:
@@ -2669,23 +2774,22 @@ def handle_outputs(args, hi_het_data, p0_genotype_df=None):
             except Exception as e:
                 print(f"[Pedigree plotting] Error: {e}")
 
-    # ============================================================
+    # ..............................
     # 3. Ancestry Blocks
-    # ============================================================
+    # ..............................
     if args.track_blocks:
         blocks_csv = output_path_prefix + "_ancestry_blocks.csv"
         try:
             blocks_df = pd.read_csv(blocks_csv)
             print(f"Ancestry block data loaded from: {blocks_csv}")
-            # Add future visuals here
         except FileNotFoundError:
             print(f"Warning: No ancestry blocks CSV at: {blocks_csv}")
         except Exception as e:
             print(f"Error reading ancestry blocks CSV: {e}")
 
-    # ============================================================
+    # ..............................
     # 4. Junctions
-    # ============================================================
+    # ..............................
     if args.track_junctions:
         junction_csv = output_path_prefix + "_ancestry_junctions.csv"
         try:
@@ -2696,9 +2800,9 @@ def handle_outputs(args, hi_het_data, p0_genotype_df=None):
         except Exception as e:
             print(f"Error reading ancestry junctions CSV: {e}")
 
-    # ============================================================
-    # 5. Locus genotype data
-    # ============================================================
+    # ..............................
+    # 5. Locus haplotype data (allles for each individual at Hap A and Hap B)
+    # ..............................
     if args.output_locus:
         locus_csv = output_path_prefix + "_locus_genotype_data.csv"
         try:
@@ -2709,9 +2813,9 @@ def handle_outputs(args, hi_het_data, p0_genotype_df=None):
         except Exception as e:
             print(f"Error reading locus genotype CSV: {e}")
 
-    # ============================================================
-    # 6. Triangle Plot
-    # ============================================================
+    # ..............................
+    # 6. Triangle Plot (for visualisation of Mean HI and HET scores in each generation)
+    # ..............................
     if args.triangle_plot:
 
         # Rebuild hi_het_df IF not previously generated
@@ -2731,9 +2835,9 @@ def handle_outputs(args, hi_het_data, p0_genotype_df=None):
         plot_triangle(mean_df, save_filename=out)
         print(f"Triangle plot saved to: {out}")
 
-    # ============================================================
-    # 7. Population size plot
-    # ============================================================
+    #..............................
+    # 7. Population size plot (to make sure the pop size is changing as defined by parameters)
+    # ..............................
     if args.population_plot:
         try:
             out = output_path_prefix + "_population_size.png"
@@ -2742,52 +2846,53 @@ def handle_outputs(args, hi_het_data, p0_genotype_df=None):
         except Exception as e:
             print(f"Error generating population size plot: {e}")
 
-# MAIN RUN
+# ARGUEMENTS FOR MAIN EXECUTION
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
-        description="Genetic simulation for panmictic Pn generations. Supports genotype-file input OR synthetic mode.",
+        description="Genetic simulation to look at crossing from a mixed ancestral popualtion with genotype data input",
         formatter_class=argparse.RawTextHelpFormatter
     )
 
-    # --- INPUT OPTIONS ---
+    # INPUT FILES OPTIONS
     input_options = parser.add_argument_group('Input Options (File-Based)')
     input_options.add_argument(
         "-gf", "--genotype-file", type=str,
-        help="CSV file containing P0 genotypes."
+        help="CSV file containing parental genotypes to create P0 population."
     )
     input_options.add_argument(
         "-mf", "--map-file", type=str,
-        help="CSV file containing the marker map (chromosome + position)."
+        help="CSV file containing the marker map (marker + chromosome + cM/position)."
     )
 
-    # --- GENERAL SIMULATION PARAMETERS ---
+    # GENERAL SIMULATION PARAMETERS
     general_params = parser.add_argument_group('General Simulation Parameters')
     general_params.add_argument("-HG", "--num_hybrid_generations", type=int, default=1,
                                 help="Number of hybrid generations (P1, P2, ...).")
     general_params.add_argument("-ts", "--target_pop_size", type=int, default=100,
-                                help="Target population size in P1+.")
+                                help="Target population size in P1+. For Nc/Ne and fitness function purposes") # check this
     general_params.add_argument("-no", "--num_offspring", type=str, default='{"2":1.0}',
                                 help="Distribution for offspring per pair (JSON string).")
     general_params.add_argument("-cd", "--crossover_dist", type=str, default='{"1":1.0}',
                                 help="Distribution for crossovers per chromosome.")
     general_params.add_argument("--seed", type=int, default=None,
                                 help="Random seed.")
+    
+    ###  ARE ANY OF THESE NEEDED??? ### 
     general_params.add_argument("-nreps", "--num_replicates", type=int, default=1,
                                 help="Number of replicates.")
     general_params.add_argument("-repid", "--replicate_id", type=int, required=True,
-                                help="Replicate ID.")
+                                help="Replicate ID.") # the 2 above contradict each other I think
     general_params.add_argument("--threads", type=int, default=None,
-                                help="Number of threads.")
-    # Add these two arguments to your parser (near other general params)
+                                help="Number of threads.") # Is this needed??? 
     general_params.add_argument("--cM_per_Mb", type=float, default=1.0,
                                 help="Conversion factor used when only position is available: cM per megabase. Default=1.0 (i.e. 1 cM / 1 Mb).")
     general_params.add_argument("--co_multiplier", type=float, default=1.0,
                                 help="Multiplier that scales interval recombination probabilities (affects expected number of crossovers). Default=1.0")
 
 
-    # --- SYNTHETIC-ONLY DEFAULTS ---
-    simple_group = parser.add_argument_group('Synthetic Mode Parameters')
+    # DEFAULTS (if not known or in the input file)
+    simple_group = parser.add_argument_group('Additional Parameters')
     simple_group.add_argument("-n0", "--num_pop0", type=int, default=100,
                               help="Size of P0 (synthetic mode only).")
     simple_group.add_argument("-nm", "--num_marker", type=int, default=1000,
@@ -2797,7 +2902,7 @@ if __name__ == "__main__":
     simple_group.add_argument("-md", "--missing_data", type=str, default="0.0",
                               help="Missing data probability per marker.")
 
-    # --- TRACKING / OUTPUT OPTIONS ---
+    # TRACKING / OUTPUT OPTIONS
     tracking_group = parser.add_argument_group('Tracking and Output Options')
     tracking_group.add_argument("-pr", "--pedigree_recording", action="store_true",
                                 help="Record pedigree.")
@@ -2830,16 +2935,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
 # Define the ID columns used in the workflow (Moved to top of block)
-ID_COLUMNS_TO_EXCLUDE = ["PLANTID", "RAMETIDS"]
+ID_COLUMNS_TO_EXCLUDE = ["PLANTID", "RAMETIDS"] # * Check positioning of this *
 
-# --- START OF MAIN EXECUTION BLOCK ---
-# NOTE: Assume 'args' (argparse.Namespace) is defined and populated before this block.
+# START OF MAIN EXECUTION BLOCK
+print(f"\nStarting Simulation Replicate {args.replicate_id}")
 
-print(f"\n=== Starting Simulation Replicate {args.replicate_id} ===")
-
-# -------------------------------------------------------------
-# 1. SEED HANDLING
-# -------------------------------------------------------------
+# ..............................
+# 1. SEED (for reproducibility)
+# ..............................
 current_seed = args.seed if args.seed is not None else int(time.time()) + args.replicate_id
 print(f"[Setup] Random seed = {current_seed}")
 random.seed(current_seed)
@@ -2848,19 +2951,19 @@ np.random.seed(current_seed)
 args.output_name = f"{args.output_name}_rep_{args.replicate_id}"
 print(f"[Setup] Output prefix = {args.output_name}")
 
-# -------------------------------------------------------------
-# 2. NORMALIZATION HELPER
-# -------------------------------------------------------------
+# ..............................
+# 2. NORMALISATION HELPER (for standardising marker IDs)
+# ..............................
 def normalize(x):
     if pd.isna(x): return ""
     s = str(x).upper().strip()
     s = s.replace("\ufeff", "")
     return "".join(s.split())
 
-# -------------------------------------------------------------
-# 3. LOAD GENOTYPE + CLEAN HEADERS
-# -------------------------------------------------------------
-print("\n=== Loading Genotype File ===")
+# ..............................
+# 3. LOAD GENOTYPE + CLEAN MARKER IDS (from headers to data)
+# ..............................
+print("\nLoading Genotype File")
 
 df_geno = pd.read_csv(args.genotype_file, dtype=str, low_memory=False)
 df_geno.columns = [normalize(c) for c in df_geno.columns]
@@ -2877,13 +2980,13 @@ for col in df_geno.columns:
     if numeric.notna().sum() > 0:
         marker_cols.append(col)
 
-print(f"[Genotype] Individuals = {len(df_geno)}")
-print(f"[Genotype] Markers detected = {len(marker_cols)}")
+print(f"[Genotype Input] Individuals = {len(df_geno)}")
+print(f"[Genotype Input] Markers detected = {len(marker_cols)}")
 
-# -------------------------------------------------------------
-# 4. LOAD MAP + NORMALIZE + ALIGN ORDER EXACTLY TO GENOTYPE
-# -------------------------------------------------------------
-print("\n=== Loading Marker Map ===")
+# ..............................
+# 4. LOAD MAP + NORMALISE + ALIGN ORDER EXACTLY TO GENOTYPE * check this? *
+# ..............................
+print("\nLoading Marker Map")
 
 map_raw = read_marker_map(args.map_file, marker_cols)
 map_df = pd.DataFrame(map_raw)
@@ -2911,26 +3014,26 @@ map_df = pd.DataFrame(ordered_rows).reset_index(drop=True)
 map_df = map_df.drop(columns=["LocusName_NORM"])
 print(f"[Map] Final aligned markers = {len(map_df)}")
 
-# -------------------------------------------------------------
-# 5. VALIDATE GENOTYPES
-# -------------------------------------------------------------
-print("\n=== Validating Genotype Dosages ===")
+# ..............................
+# 5. VALIDATE GENOTYPES 
+# ..............................
+print("\nValidating Genotypes")
 
 dosages = df_geno[marker_cols].values
 validated = validate_genotypes(dosages)
 df_geno.loc[:, marker_cols] = validated
 
-# -------------------------------------------------------------
-# 6. BUILD P0 POPULATION
-# -------------------------------------------------------------
-print("\n=== Building P0 Population ===")
+# ..............................
+# 6. BUILD P0 POPULATION (from input file)
+# ..............................
+print("\nBuilding Parental Population (P0)")
 
 p0 = load_p0_population_from_genotypes_final(df_geno, map_df.to_dict(orient="records"))
 print(f"[P0] Individuals loaded = {len(p0.individuals)}")
 
-# -------------------------------------------------------------
-# 7. CREATE SIMULATOR
-# -------------------------------------------------------------
+# ..............................
+# 7. CREATE SIMULATOR * check this * 
+# ..............................
 sim = RecombinationSimulator(
     known_markers_data=map_df.to_dict(orient="records"),
     num_chromosomes=args.num_chrs,
@@ -2940,17 +3043,17 @@ sim = RecombinationSimulator(
 
 sim.get_population(p0)
 
-# -------------------------------------------------------------
-# 8. INITIAL HI / HET
-# -------------------------------------------------------------
+# ..............................
+# 8. HI / HET 
+# ..............................
 initial_hi_het = {}
 for ind in p0.individuals.values():
     hi, het = sim.calculate_hi_het(ind)
     initial_hi_het[ind.individual_id] = {"HI": hi, "HET": het}
 
-# -------------------------------------------------------------
+# ..............................
 # 9. PARSE DISTRIBUTIONS
-# -------------------------------------------------------------
+# ..............................
 try:
     cd = ast.literal_eval(args.crossover_dist)
     crossover_dist = {int(k): float(v) for k, v in cd.items()}
@@ -2966,10 +3069,10 @@ except:
 # Build plan
 crossing_plan = build_panmictic_plan(args.num_hybrid_generations, args.target_pop_size)
 
-# -------------------------------------------------------------
+# ..............................
 # 10. RUN SIMULATION
-# -------------------------------------------------------------
-print("\n=== Running Simulation ===")
+# -..............................
+print("\nRunning Simulation")
 
 populations_dict, hi_het_new = simulate_generations(
     simulator=sim,
@@ -2990,15 +3093,15 @@ hi_het_all = {**initial_hi_het, **hi_het_new}
 
 print(f"[Simulation] Finished. Populations = {list(sim.populations_dict.keys())}")
 
-# -------------------------------------------------------------
-# 11. PREP MAP FOR VISUALIZATION
-# -------------------------------------------------------------
+# ..............................
+# 11. PREP MAP FOR VISUALISATION
+# ..............................
 map_df["marker_index"] = np.arange(len(map_df))
 
-# -------------------------------------------------------------
+# ..............................
 # 12. COMPILE LOCUS GENOTYPE DATA
-# -------------------------------------------------------------
-print("\n=== Compiling Locus Genotypes ===")
+# ..............................
+print("\nCompiling Locus Genotypes")
 
 locus_df = compile_locus_data_to_df(sim.populations_dict, map_df)
 
@@ -3010,9 +3113,9 @@ if args.output_locus:
     locus_df.to_csv(locus_path, index=False)
     print(f"[Output] Locus genotype data saved: {locus_path}")
 
-# -------------------------------------------------------------
-# 13. BUILD & SAVE OFFSPRING WIDE FORMAT
-# -------------------------------------------------------------
+# ..............................
+# 13. BUILD & SAVE OFFSPRING OUTPUT (to append to short file/input)
+# ..............................
 offspring_df = locus_df[~locus_df["individual_id"].str.startswith("P0")].copy()
 offspring_csv = os.path.join(output_dir, f"{args.output_name}_offspring_genotypes.csv")
 
@@ -3026,7 +3129,7 @@ if not offspring_df.empty:
 
     print(f"[Output] Offspring wide genotype CSV: {offspring_csv}")
 
-    # Essential checks (but concise)
+    # Essential checks
     marker_cols_offspring = [c for c in df_off.columns if c not in ["PLANTID","RAMETIDS","individual_id"]]
 
     missing = set(map_df["LocusName"]) - set(marker_cols_offspring)
@@ -3037,10 +3140,10 @@ if not offspring_df.empty:
 else:
     print("[Output] No offspring; skipping wide-format CSV.")
 
-# -------------------------------------------------------------
-# 13b. OPTIONAL: PLOT GENOMES OF ALL OFFSPRING
-# -------------------------------------------------------------
-print("\n=== Plotting Offspring Chromosome Ancestry ===")
+# ..............................
+# 13b. PLOT GENOMES OF ALL OFFSPRING
+# ..............................
+''' print("\nPlotting Offspring Chromosome Ancestry")
 
 plot_dir = os.path.join(output_dir, "ancestry_plots")
 os.makedirs(plot_dir, exist_ok=True)
@@ -3054,10 +3157,48 @@ for ind in df_off["individual_id"].unique():
         output_path=out_png,
         id_col="individual_id"
     )
+'''
+output_path_prefix = os.path.join(output_dir, args.output_name)
 
-# -------------------------------------------------------------
-# 14. FINAL HANDLE OUTPUTS
-# -------------------------------------------------------------
+# Load pedigree
+pedigree_csv = output_path_prefix + "_pedigree.csv"
+if not os.path.exists(pedigree_csv):
+    raise FileNotFoundError(f"Pedigree file not found: {pedigree_csv}")
+
+ped = pd.read_csv(pedigree_csv)
+
+# Keep only F1 offspring (those starting with "P1_")
+ped_f1 = ped[ped["offspring_id"].str.startswith("P1_")].copy()
+
+print(f"Found {len(ped_f1)} first-generation offspring.")
+
+plot_dir = os.path.join(output_dir, "ancestry_trio_plots")
+os.makedirs(plot_dir, exist_ok=True)
+
+for _, row in ped_f1.iterrows():
+    offspring = row["offspring_id"]
+    parent1 = row["parent1_id"]
+    parent2 = row["parent2_id"]
+
+    out_png = os.path.join(
+        plot_dir,
+        f"{args.output_name}_{offspring}_TRIO_plot.png"
+    )
+
+    plot_trio_genomes_wide(
+        wide_genotype_df=df_off,     # your full genotype table
+        marker_map_df=map_df,
+        parent1_id=parent1,
+        parent2_id=parent2,
+        offspring_id=offspring,
+        output_path=out_png,
+        id_col="individual_id",
+        layout='vertical'            # or 'horizontal'
+    )
+
+# ..............................
+# 14. FINAL OUTPUTS
+# ..............................
 handle_outputs(args, hi_het_all, locus_df)
 
-print(f"\n=== Finished Simulation Replicate {args.replicate_id} ===")
+print(f"\nFinished Simulation Replicate {args.replicate_id}")
