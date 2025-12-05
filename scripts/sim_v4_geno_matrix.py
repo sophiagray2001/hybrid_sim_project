@@ -3182,6 +3182,7 @@ for ind in df_off["individual_id"].unique():
         id_col="individual_id"
     )
 '''
+'''
 output_path_prefix = os.path.join(output_dir, args.output_name)
 
 # Load pedigree
@@ -3219,7 +3220,7 @@ for _, row in ped_f1.iterrows():
         id_col="individual_id",
         layout='vertical'            # or 'horizontal'
     )
-
+'''
 # ..............................
 # 14. FINAL OUTPUTS
 # ..............................
