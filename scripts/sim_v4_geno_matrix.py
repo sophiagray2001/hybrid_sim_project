@@ -1644,48 +1644,44 @@ def simulate_generations(
     track_ancestry,
     track_blocks,
     track_junctions,
-    output_locus, 
+    output_locus,
     verbose,
     args
 ):
     """
-    Simulate generations according to crossing_plan.
-
-    Key behavior:
-      - No ancestor-descendant matings (checked via global pedigree).
-      - HI/HET computed from marker genotypes (haplotypes) only.
-      - Offspring-per-pair drawn from `number_offspring` distribution.
-      - Global pedigree index maintained.
-      - Outputs written incrementally.
+    Simulate generations according to crossing_plan with multi-mating Option A:
+        - Every individual mates at least once (forced round).
+        - Additional random pairings are added so individuals can mate multiple times.
+        - Each pair produces offspring sampled from `number_offspring`.
+        - If total offspring exceed target_size, we sample down to target_size.
+        - Ancestor-descendant matings are blocked.
     """
-    # Ensure simulator has global pedigree
+    import math
+    import os
+    import random
+    import numpy as np
+    import csv
+
+    # -------------------------
+    # Helpers
+    # -------------------------
     if not hasattr(simulator, "global_pedigree"):
         simulator.global_pedigree = {}
 
-    # Ensure simulator has populations_dict
     simulator.populations_dict = {initial_pop.label: initial_pop}
-    populations_dict = simulator.populations_dict  # alias
+    populations_dict = simulator.populations_dict
 
     # Validate number_offspring distribution
     if not isinstance(number_offspring, dict) or len(number_offspring) == 0:
         raise ValueError("number_offspring must be a non-empty dict {count: prob}.")
     nums = list(number_offspring.keys())
     probs = list(number_offspring.values())
-    if any((not isinstance(n, int) or n < 0) for n in nums):
-        raise ValueError("number_offspring keys must be non-negative integers.")
-    psum = float(sum(probs))
-    if psum <= 0:
-        raise ValueError("number_offspring probabilities must sum to > 0.")
-    probs = [p / psum for p in probs]
+    probs = [p / float(sum(probs)) for p in probs]
 
     # Ancestor check
-    def is_ancestor(ancestor_id: str, descendant_id: str, memo: dict = None) -> bool:
-        if ancestor_id is None or descendant_id is None:
+    def is_ancestor(ancestor_id: str, descendant_id: str) -> bool:
+        if ancestor_id is None or descendant_id is None or ancestor_id == descendant_id:
             return False
-        if ancestor_id == descendant_id:
-            return True
-        if memo is None:
-            memo = {}
         stack = [descendant_id]
         visited = set()
         while stack:
@@ -1699,76 +1695,49 @@ def simulate_generations(
             p1, p2 = parents
             if p1 == ancestor_id or p2 == ancestor_id:
                 return True
-            if p1 is not None:
-                stack.append(p1)
-            if p2 is not None:
-                stack.append(p2)
+            stack.extend([p1, p2])
         return False
 
-    # Marker-based HI/HET
+    # HI/HET computation
     def compute_hi_het_marker_based(individual):
+        MISSING_DATA_CODE = -1
         total_nonmissing = 0
         sum_alleles = 0
         heterozygous = 0
-        
-        # NOTE: Assuming MISSING_DATA_CODE = -1 is available globally or imported here
-        MISSING_DATA_CODE = -1 
-
         for chrom_id in simulator.chromosome_structure.keys():
             hapA, hapB = individual.genome.chromosomes[chrom_id]
             hapA = np.asarray(hapA)
             hapB = np.asarray(hapB)
-            
-            # Find markers where both alleles are NOT missing
             valid = (hapA != MISSING_DATA_CODE) & (hapB != MISSING_DATA_CODE)
             cnt = int(np.sum(valid))
             if cnt == 0:
                 continue
-                
             total_nonmissing += cnt
-            
-            # Sum of '1' alleles (HI numerator): Count of Ancestry 1 alleles
             sum_alleles += int(np.sum(hapA[valid]) + np.sum(hapB[valid]))
-            
-            # Heterozygous markers: Count sites where the two haplotypes differ (0|1 or 1|0)
             heterozygous += int(np.sum(hapA[valid] != hapB[valid]))
-            
-        # --- CRITICAL FIX: Return NaN if no valid data is present ---
         if total_nonmissing == 0:
-            # We return np.nan to explicitly indicate 'No Data' instead of forcing HI=0/HET=0
             return np.nan, np.nan
-            
-        # HI: Proportion of Ancestry 1 alleles ('1's).
-        hi = sum_alleles / (2 * total_nonmissing)
-        
-        # HET: Proportion of heterozygous sites (Count of Dosage 1 / Total Valid Markers)
-        het = heterozygous / total_nonmissing
-        
-        return hi, het
-        
-    # Outputs
+        return sum_alleles / (2 * total_nonmissing), heterozygous / total_nonmissing
+
     hi_het_data = {}
 
+    # -------------------------
+    # Output setup
+    # -------------------------
     output_dir = os.path.join(args.output_dir, "results")
     os.makedirs(output_dir, exist_ok=True)
     output_path_prefix = os.path.join(output_dir, args.output_name)
 
-    locus_file_path = output_path_prefix + "_locus_genotype_data.csv"
-    pedigree_file_path = output_path_prefix + "_pedigree.csv"
-    blocks_file_path = output_path_prefix + "_ancestry_blocks.csv"
-    junctions_file_path = output_path_prefix + "_ancestry_junctions.csv"
-
-    locus_file = open(locus_file_path, 'w', newline='') if output_locus else None
-    ancestry_file = open(pedigree_file_path, 'w', newline='') if track_ancestry else None
-    blocks_file = open(blocks_file_path, 'w', newline='') if track_blocks else None
-    junctions_file = open(junctions_file_path, 'w', newline='') if track_junctions else None
+    locus_file = open(output_path_prefix + "_locus_genotype_data.csv", 'w', newline='') if output_locus else None
+    ancestry_file = open(output_path_prefix + "_pedigree.csv", 'w', newline='') if track_ancestry else None
+    blocks_file = open(output_path_prefix + "_ancestry_blocks.csv", 'w', newline='') if track_blocks else None
+    junctions_file = open(output_path_prefix + "_ancestry_junctions.csv", 'w', newline='') if track_junctions else None
 
     locus_writer = csv.writer(locus_file) if locus_file else None
     ancestry_writer = csv.writer(ancestry_file) if ancestry_file else None
     blocks_writer = csv.writer(blocks_file) if blocks_file else None
     junctions_writer = csv.writer(junctions_file) if junctions_file else None
 
-    # Write headers
     if locus_writer:
         locus_writer.writerow(['individual_id', 'locus_id', 'chromosome', 'cM', 'genotype_value'])
     if ancestry_writer:
@@ -1778,63 +1747,53 @@ def simulate_generations(
     if junctions_writer:
         junctions_writer.writerow(['individual_id', 'chromosome', 'cM'])
 
-    # Precompute all parent labels for memory cleanup
-    all_parent_labels_global = set()
-    for cc in crossing_plan:
-        all_parent_labels_global.add(cc['parent1_label'])
-        all_parent_labels_global.add(cc['parent2_label'])
-
-    # ---------------------------------------------------
+    # -------------------------
     # MAIN LOOP
-    # ---------------------------------------------------
+    # -------------------------
     for cross_index, cross in enumerate(crossing_plan):
         gen_label = cross['offspring_label']
-        parent1_label = cross['parent1_label']
-        parent2_label = cross['parent2_label']
+        parent_label = cross['parent1_label']
         target_size = int(cross['target_size'])
 
         if verbose:
-            print(f"\nSimulating generation {gen_label} from parents ({parent1_label}, {parent2_label})")
+            print(f"\nSimulating generation {gen_label} [multi-mating Option A]")
 
-        parent1_pop = populations_dict.get(parent1_label)
-        parent2_pop = populations_dict.get(parent2_label) if parent2_label != parent1_label else parent1_pop
+        parent_pop = populations_dict[parent_label]
+        parent_pool = list(parent_pop.individuals.values())
+        if len(parent_pool) < 2:
+            populations_dict[gen_label] = Population(gen_label)
+            continue
 
-        if parent1_pop is None or parent2_pop is None:
-            raise ValueError(f"Missing parent population for generation {gen_label}")
-
-        parent_pool = list(parent1_pop.individuals.values())
-        if len(parent_pool) == 0:
-            raise ValueError(f"Parent pool for {gen_label} is empty.")
-
+        # --- Forced round: everyone mates at least once ---
         random.shuffle(parent_pool)
-        candidate_pairs = []
-        i = 0
-        N = len(parent_pool)
-
-        # Pairing logic
-        while i + 1 < N:
+        forced_pairs = []
+        for i in range(0, len(parent_pool), 2):
             p1 = parent_pool[i]
-            p2 = parent_pool[i + 1]
-            if is_ancestor(p1.individual_id, p2.individual_id) or is_ancestor(p2.individual_id, p1.individual_id):
-                if verbose:
-                    print(f"Skipping ancestor-descendant pair {p1.individual_id} <> {p2.individual_id}")
-                i += 1
-                continue
-            if p1.individual_id != p2.individual_id:
-                candidate_pairs.append((p1, p2))
-            i += 2
-        # Pool means the number of eligable individual parents 
+            p2 = parent_pool[i+1] if i+1 < len(parent_pool) else random.choice(parent_pool)
+            if p1.individual_id != p2.individual_id and not is_ancestor(p1.individual_id, p2.individual_id) and not is_ancestor(p2.individual_id, p1.individual_id):
+                forced_pairs.append((p1, p2))
+
+        # --- Extra random pairs (allow repeated matings) ---
+        extra_pairs = []
+        for _ in range(len(forced_pairs)):
+            p1 = random.choice(parent_pool)
+            p2 = random.choice(parent_pool)
+            tries = 0
+            while p1.individual_id == p2.individual_id and tries < 10:
+                p2 = random.choice(parent_pool)
+                tries += 1
+            if not is_ancestor(p1.individual_id, p2.individual_id) and not is_ancestor(p2.individual_id, p1.individual_id):
+                extra_pairs.append((p1, p2))
+
+        candidate_pairs = forced_pairs + extra_pairs
+
         if verbose:
-            print(f"Selected {len(candidate_pairs)} mating pairs (from a pool of {len(parent_pool)} eligible parents).")
+            print(f"Forced pairs: {len(forced_pairs)}, Extra pairs: {len(extra_pairs)}, Total pairs: {len(candidate_pairs)}")
 
-        # Generate offspring
+        # --- Produce offspring ---
         all_offspring_results = []
-        for (p1, p2) in candidate_pairs:
-            try:
-                n_off = int(np.random.choice(nums, p=probs))
-            except:
-                n_off = 1
-
+        for p1, p2 in candidate_pairs:
+            n_off = int(np.random.choice(nums, p=probs))
             for _ in range(n_off):
                 offspring_id = f"{gen_label}_{len(all_offspring_results)+1}"
                 task = (
@@ -1850,25 +1809,13 @@ def simulate_generations(
                 res = perform_cross_task(task, args.num_chrs)
                 if res.get('error') or res.get('individual') is None:
                     continue
-
                 child = res['individual']
                 simulator.global_pedigree[child.individual_id] = (child.parent1_id, child.parent2_id)
-
                 all_offspring_results.append(res)
 
+        # --- Down-sample to target size ---
         total_generated = len(all_offspring_results)
-        if total_generated == 0:
-            if verbose:
-                print(f"No offspring generated for {gen_label}.")
-            populations_dict[gen_label] = Population(gen_label)
-            continue
-
-        survivors_idx = (
-            set(random.sample(range(total_generated), target_size))
-            if total_generated > target_size
-            else set(range(total_generated))
-        )
-
+        survivors_idx = set(range(total_generated)) if total_generated <= target_size else set(random.sample(range(total_generated), target_size))
         new_pop = Population(gen_label)
         written_ancestry = set()
 
@@ -1878,71 +1825,31 @@ def simulate_generations(
                 if child and child.individual_id in simulator.global_pedigree:
                     del simulator.global_pedigree[child.individual_id]
                 continue
-
             child = res['individual']
             hi, het = compute_hi_het_marker_based(child)
             hi_het_data[child.individual_id] = {'HI': hi, 'HET': het}
-
             new_pop.add_individual(child)
-
             if locus_writer and res.get('locus_data'):
                 locus_writer.writerows(res['locus_data'])
-
             if ancestry_writer and res.get('ancestry_data'):
                 for row in res['ancestry_data']:
                     if row not in written_ancestry:
                         ancestry_writer.writerow(row)
                         written_ancestry.add(row)
-
             if blocks_writer and res.get('blocks_data'):
                 blocks_writer.writerows(res['blocks_data'])
-
             if junctions_writer and res.get('junctions_data'):
                 junctions_writer.writerows(res['junctions_data'])
 
-        if verbose:
-            print(f"Generated {len(new_pop.individuals)} survivors "
-                  f"for {gen_label} (requested {target_size}, produced {total_generated}).")
-
         populations_dict[gen_label] = new_pop
 
-        # Cleanup
-        future_parent_labels = {
-            future['parent1_label']
-            for future in crossing_plan[cross_index+1:]
-        }.union({
-            future['parent2_label']
-            for future in crossing_plan[cross_index+1:]
-        })
-
-        gens_to_keep = (
-            {initial_pop.label, gen_label}
-            .union(future_parent_labels)
-            .union(all_parent_labels_global)
-        )
-        pops_to_remove = [k for k in list(populations_dict.keys()) if k not in gens_to_keep]
-
-        for k in pops_to_remove:
-            if verbose:
-                print(f"Deleting population {k} to save memory.")
-            del populations_dict[k]
-
-    # Close files
-    def safe_flush_close(fh):
-        try:
-            fh.flush()
-            os.fsync(fh.fileno())
-        except:
-            pass
-        try:
-            fh.close()
-        except:
-            pass
-
-    if locus_file: safe_flush_close(locus_file)
-    if ancestry_file: safe_flush_close(ancestry_file)
-    if blocks_file: safe_flush_close(blocks_file)
-    if junctions_file: safe_flush_close(junctions_file)
+    # --- Close files ---
+    for fh in [locus_file, ancestry_file, blocks_file, junctions_file]:
+        if fh:
+            try: fh.flush(); os.fsync(fh.fileno())
+            except: pass
+            try: fh.close()
+            except: pass
 
     return populations_dict, hi_het_data
 
@@ -2912,6 +2819,7 @@ if __name__ == "__main__":
                                 help="Conversion factor used when only position is available: cM per megabase. Default=1.0 (i.e. 1 cM / 1 Mb).")
     general_params.add_argument("--co_multiplier", type=float, default=1.0,
                                 help="Multiplier that scales interval recombination probabilities (affects expected number of crossovers). Default=1.0")
+    general_params.add_argument("--multi_mating", action="store_true", help="Enable multi-mating Option A: each individual mates at least once + extra random matings.")
 
 
     # DEFAULTS (if not known or in the input file)
@@ -3095,8 +3003,6 @@ crossing_plan = build_panmictic_plan(args.num_hybrid_generations, args.target_po
 # ..............................
 # 10. RUN SIMULATION
 # ...............................
-print("\nRunning Simulation")
-
 populations_dict, hi_het_new = simulate_generations(
     simulator=sim,
     initial_pop=p0,

@@ -550,14 +550,14 @@ def read_allele_freq_from_csv(file_path, args):
         print(f"Warning: 'chromosome' column not found. Assigning markers to {num_chrs} chromosomes.")
 
     # OPTIONAL 'base_pair' check
-    if 'base_pair' not in df.columns:
+    if 'position' not in df.columns:
         num_markers = len(df)
         if args.map_generate:
-            df['base_pair'] = [random.uniform(0.0, 100.0) for _ in range(num_markers)]
+            df['position'] = [random.uniform(0.0, 100.0) for _ in range(num_markers)]
             print("Generating random marker positions due to '--gmap' flag.")
         else:
-            df['base_pair'] = np.linspace(0.0, 100.0, num_markers)
-            print("Warning: 'base_pair' column not found. Generating uniform positions.")
+            df['position'] = np.linspace(0.0, 100.0, num_markers)
+            print("Warning: 'position' column not found. Generating uniform positions.")
     
     # OPTIONAL 'md_prob' check
     if 'md_prob' not in df.columns:
