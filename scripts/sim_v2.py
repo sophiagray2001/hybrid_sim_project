@@ -3,7 +3,7 @@ import numpy as np
 import random
 import argparse
 import os
-import json
+import ast
 import networkx as nx
 import matplotlib.pyplot as plt
 #import multiprocessing
@@ -63,12 +63,16 @@ class Population:
     def get_individual_by_id(self, individual_id):
         return self.individuals.get(individual_id)
 
-
 class RecombinationSimulator:
     """
     Manages the simulation of genetic recombination and the creation of
     new individuals based on parental genotypes and a genetic map.
     """
+
+    # ================================================================
+    # INITIALIZATION
+    # ================================================================
+
     def __init__(self, known_markers_data, num_chromosomes):
         self.known_markers_data = known_markers_data
         self.marker_map = self._create_marker_map()
@@ -76,23 +80,22 @@ class RecombinationSimulator:
         self.chromosome_lengths_cm = self._get_chromosome_lengths_cm()
         self.marker_positions_arrays = self._create_marker_position_arrays()
 
+    # ================================================================
+    # MARKER / CHROMOSOME SETUP
+    # ================================================================
+
     def _create_marker_map(self):
-        """Creates a dictionary mapping markers to their position and chromosome."""
         marker_map = {}
         for marker in self.known_markers_data:
-            marker_id = marker['marker_id']
-            chromosome = marker['chromosome']
-            base_pair = marker['base_pair']
-            marker_map[marker_id] = {'chromosome': chromosome, 'base_pair': base_pair}
+            marker_map[marker['marker_id']] = {
+                'chromosome': marker.get('chromosome'),
+                'position': marker['position']
+            }
         return marker_map
 
     def _create_chromosome_structure(self, num_chromosomes):
-        """
-        Organises markers by chromosome and orders them by position.
-        The position is in centimorgans (cM).
-        """
         chromosome_structure = {str(i): [] for i in range(1, num_chromosomes + 1)}
-        
+
         first_marker = self.known_markers_data[0] if self.known_markers_data else None
         has_chrom_col = first_marker and 'chromosome' in first_marker
 
@@ -101,362 +104,279 @@ class RecombinationSimulator:
                 chrom = str(marker['chromosome'])
             else:
                 chrom = str((i % num_chromosomes) + 1)
-            
-            if chrom not in chromosome_structure:
-                chromosome_structure[chrom] = []
-            
-            chromosome_structure[chrom].append(marker)
-        
+
+            chromosome_structure.setdefault(chrom, []).append(marker)
+
         for chrom in chromosome_structure:
-            chromosome_structure[chrom].sort(key=lambda x: x['base_pair'])
-            
+            chromosome_structure[chrom].sort(key=lambda x: x['position'])
+
         return chromosome_structure
 
     def _get_chromosome_lengths_cm(self):
-        """
-        Calculates the length of each chromosome based on the range of marker positions.
-        """
         lengths = {}
         for chrom, markers in self.chromosome_structure.items():
             if markers:
-                min_pos = markers[0]['base_pair']
-                max_pos = markers[-1]['base_pair']
-                # NOTE: This calculation is the difference between the first and last base_pair position.
-                lengths[chrom] = max_pos - min_pos 
+                lengths[chrom] = markers[-1]['position'] - markers[0]['position']
             else:
                 lengths[chrom] = 0.0
         return lengths
-    
-    def _create_marker_position_arrays(self):
-        """
-        Converts the list of marker base_pair positions for each chromosome
-        into a NumPy array for fast searching.
-        """
-        pos_arrays = {}
-        for chrom, markers in self.chromosome_structure.items():
-            if markers:
-                pos_arrays[chrom] = np.array([m['base_pair'] for m in markers])
-            else:
-                pos_arrays[chrom] = np.array([])
-        return pos_arrays
-    
-    def _simulate_crossovers(self, chromosome_id, crossover_dist):
-        """
-        Simulates the number of crossovers on a chromosome using the provided distribution.
-        """
-        num_crossovers = random.choices(list(crossover_dist.keys()), weights=list(crossover_dist.values()), k=1)[0]
-        return num_crossovers
 
-    def _simulate_haploid_recombination(self, parent_haplotype1, parent_haplotype2, chromosome_id, num_crossovers, track_junctions):
-        """
-        Performs recombination on a pair of parent haplotypes to create a new offspring haplotype.
-        """
-        offspring_haplotype = np.zeros_like(parent_haplotype1)
+    def _create_marker_position_arrays(self):
+        return {
+            chrom: np.array([m['position'] for m in markers])
+            if markers else np.array([])
+            for chrom, markers in self.chromosome_structure.items()
+        }
+
+    # ================================================================
+    # RECOMBINATION CORE
+    # ================================================================
+
+    def _simulate_crossovers(self, chromosome_id, crossover_dist):
+        return random.choices(
+            list(crossover_dist.keys()),
+            weights=list(crossover_dist.values()),
+            k=1
+        )[0]
+
+    def _simulate_haploid_recombination(
+        self, hap1, hap2, chromosome_id, num_crossovers, track_junctions
+    ):
+        offspring = np.zeros_like(hap1)
         junctions = []
 
         if num_crossovers == 0:
-            if random.random() < 0.5:
-                offspring_haplotype = np.copy(parent_haplotype1)
-            else:
-                offspring_haplotype = np.copy(parent_haplotype2)
-            return offspring_haplotype, junctions
-            
-        chrom_length = self.chromosome_lengths_cm.get(chromosome_id, 0.0)
-        
-        crossover_positions_cm = np.sort(np.random.uniform(0, chrom_length, num_crossovers))
+            return (np.copy(hap1) if random.random() < 0.5 else np.copy(hap2)), junctions
 
-        markers_on_chrom = self.chromosome_structure.get(chromosome_id, [])
-        if not markers_on_chrom:
-            return offspring_haplotype, []
-            
-        marker_positions_cm = self.marker_positions_arrays[chromosome_id]
-        
-        crossover_indices = []
-        for pos_cm in crossover_positions_cm:
-            idx_after = np.searchsorted(marker_positions_cm, pos_cm, side='right')
-            
-            if idx_after == 0:
-                closest_idx = 0
-            elif idx_after == len(marker_positions_cm):
-                closest_idx = len(marker_positions_cm) - 1
-            else:
-                dist_prev = pos_cm - marker_positions_cm[idx_after - 1]
-                dist_curr = marker_positions_cm[idx_after] - pos_cm
-                
-                if dist_prev <= dist_curr:
-                    closest_idx = idx_after - 1
-                else:
-                    closest_idx = idx_after
-                    
-            crossover_indices.append(closest_idx)
-        
-        current_haplotype = random.choice([0, 1])
-        current_marker_idx = 0
-        
-        for i, crossover_idx in enumerate(crossover_indices):
-            end_idx = crossover_idx + 1
-            if current_haplotype == 0:
-                offspring_haplotype[current_marker_idx:end_idx] = parent_haplotype1[current_marker_idx:end_idx]
-            else:
-                offspring_haplotype[current_marker_idx:end_idx] = parent_haplotype2[current_marker_idx:end_idx]
-            
+        chrom_len = self.chromosome_lengths_cm.get(chromosome_id, 0.0)
+        crossover_positions = np.sort(np.random.uniform(0, chrom_len, num_crossovers))
+
+        marker_positions = self.marker_positions_arrays[chromosome_id]
+        current = random.choice([0, 1])
+        start = 0
+
+        for pos in crossover_positions:
+            idx = np.searchsorted(marker_positions, pos, side='right')
+            idx = max(0, min(idx, len(marker_positions) - 1))
+
+            source = hap1 if current == 0 else hap2
+            offspring[start:idx + 1] = source[start:idx + 1]
+
             if track_junctions:
                 junctions.append({
                     'chromosome': chromosome_id,
-                    'base_pair': crossover_positions_cm[i],
-                    'event_type': 'crossover',
-                    'prev_marker_idx': crossover_idx
+                    'position': pos,
+                    'prev_marker_idx': idx
                 })
-            
-            current_haplotype = 1 - current_haplotype
-            current_marker_idx = end_idx
-                
-        if current_haplotype == 0:
-            offspring_haplotype[current_marker_idx:] = parent_haplotype1[current_marker_idx:]
-        else:
-            offspring_haplotype[current_marker_idx:] = parent_haplotype2[current_marker_idx:]
-            
-        return offspring_haplotype, junctions
 
-    def mate(self, parent1, parent2, crossover_dist, pedigree_recording, track_blocks, track_junctions, generation, new_offspring_id):
-        """
-        Creates a new offspring by simulating recombination from two parents.
-        """
+            current ^= 1
+            start = idx + 1
+
+        source = hap1 if current == 0 else hap2
+        offspring[start:] = source[start:]
+
+        return offspring, junctions
+
+    # ================================================================
+    # MATING (CORE)
+    # ================================================================
+
+    def mate(
+        self, parent1, parent2, crossover_dist,
+        pedigree_recording, track_blocks, track_junctions,
+        generation, new_offspring_id
+    ):
         offspring_haplotypes = {}
-        blocks_data = []
         junctions_data = []
-        
-        for chrom_id in self.chromosome_structure.keys():
-            pA_hapA, pA_hapB = parent1.genome.chromosomes[chrom_id]
-            pB_hapA, pB_hapB = parent2.genome.chromosomes[chrom_id]
 
-            num_diploid_crossovers = self._simulate_crossovers(chrom_id, crossover_dist)
-            
-            num_crossovers_pA = random.randint(0, num_diploid_crossovers)
-            num_crossovers_pB = num_diploid_crossovers - num_crossovers_pA
+        for chrom in self.chromosome_structure:
+            p1A, p1B = parent1.genome.chromosomes[chrom]
+            p2A, p2B = parent2.genome.chromosomes[chrom]
 
-            new_hapA, crossovers1 = self._simulate_haploid_recombination(pA_hapA, pA_hapB, chrom_id, num_crossovers_pA, track_junctions)
-            new_hapB, crossovers2 = self._simulate_haploid_recombination(pB_hapA, pB_hapB, chrom_id, num_crossovers_pB, track_junctions)
+            total = self._simulate_crossovers(chrom, crossover_dist)
+            n1 = random.randint(0, total)
+            n2 = total - n1
 
-            offspring_haplotypes[chrom_id] = (new_hapA, new_hapB)
+            hapA, j1 = self._simulate_haploid_recombination(
+                p1A, p1B, chrom, n1, track_junctions
+            )
+            hapB, j2 = self._simulate_haploid_recombination(
+                p2A, p2B, chrom, n2, track_junctions
+            )
+
+            offspring_haplotypes[chrom] = (hapA, hapB)
 
             if track_junctions:
-                all_crossovers = crossovers1 + crossovers2
-                
-                for pos in all_crossovers:
+                for j in j1 + j2:
                     junctions_data.append({
                         'individual_id': new_offspring_id,
-                        'chromosome': chrom_id,
-                        'base_pair': pos['base_pair'],
+                        'chromosome': chrom,
+                        'position': j['position'],
                         'event_type': 'crossover',
                         'generation': generation,
-                        'prev_marker_idx': pos['prev_marker_idx']
+                        'prev_marker_idx': j['prev_marker_idx']
                     })
-                
-        offspring_genome = Genome(offspring_haplotypes)
+
         offspring = Individual(
             individual_id=new_offspring_id,
             generation=generation,
-            genome=offspring_genome,
+            genome=Genome(offspring_haplotypes),
             parent1_id=parent1.individual_id if pedigree_recording else None,
             parent2_id=parent2.individual_id if pedigree_recording else None
         )
-        
-        if track_blocks:
-            blocks_data = self.get_ancestry_blocks(offspring)
+
+        blocks_data = self.get_ancestry_blocks(offspring) if track_blocks else []
 
         return offspring, blocks_data, junctions_data
-    
-    # RENAME: create_pure_founder -> create_pure_immigrant
-    def create_pure_immigrant(self, individual_id, generation, pop_label): 
-        """
-        Creates a new homozygous individual (immigrant) with a pure genotype 
-        based on the provided pop_label ('PA' or 'PB'). 
 
-        The creation process now respects marker frequency data if it exists 
-        (like the main founders), or falls back to fixed alleles if not.
-        """
-        
-        if pop_label not in ['PA', 'PB']:
-            raise ValueError("pop_label must be 'PA' or 'PB'")
+    # ================================================================
+    # BACKWARD-COMPATIBILITY (sim_v2.py)
+    # ================================================================
 
-        immigrant_haplotypes = {}
-        
-        # Check if frequency data is present in the first marker (a simple check)
-        # Assuming 'pa_freq' is the column containing allele frequency data.
-        marker_data_exists = self.known_markers_data and 'pa_freq' in self.known_markers_data[0]
-        
-        for chrom in self.chromosome_structure.keys():
-            markers = self.chromosome_structure[chrom]
-            num_markers = len(markers)
-            
-            if marker_data_exists:
-                # --- NEW LOGIC: Use frequency data to create pure immigrant ---
-                
-                # Create a map where P_A allele frequency is 1.0 for PA and 0.0 for PB
-                pure_freqs_map = {}
-                for m in markers:
-                    # If creating PA immigrant (pop_label='PA'), set P_A allele freq to 1.0 (fixed 0 allele)
-                    if pop_label == 'PA':
-                        pure_freqs_map[m['marker_id']] = 1.0
-                    # If creating PB immigrant (pop_label='PB'), set P_A allele freq to 0.0 (fixed 1 allele)
-                    else: 
-                        pure_freqs_map[m['marker_id']] = 0.0
-                
-                # Use the new helper function to generate the homozygous genome
-                haplotypes_chrom = self.create_initial_haplotypes_pure(markers, pure_freqs_map)
-                immigrant_haplotypes[chrom] = haplotypes_chrom
-                
-            else:
-                # --- OLD LOGIC: Fallback to fixed 0/1 alleles (for cases with no input file) ---
-                fixed_allele = 0 if pop_label == 'PA' else 1
-                
-                # Create pure haplotype arrays using NumPy
-                alleles_hap1 = np.full(num_markers, fixed_allele, dtype=np.int8)
-                alleles_hap2 = np.full(num_markers, fixed_allele, dtype=np.int8)
-                immigrant_haplotypes[chrom] = (alleles_hap1, alleles_hap2)
+    def mate_populations(
+        self,
+        pop1,
+        pop2,
+        offspring_dist,
+        gen_label,
+        pedigree_recording=True,
+        track_blocks=False,
+        track_junctions=False
+    ):
+        parents_A = list(pop1.individuals.values())
+        parents_B = list(pop2.individuals.values())
 
-        immigrant_genome = Genome(immigrant_haplotypes)
-        
-        immigrant = Individual(
-            individual_id=individual_id,
-            generation=generation,
-            genome=immigrant_genome,
-            parent1_id=None,
-            parent2_id=None 
-        )
-        return immigrant
+        n_offspring = random.choices(
+            list(offspring_dist.keys()),
+            weights=list(offspring_dist.values()),
+            k=1
+        )[0]
 
-    # --- NEW HELPER METHOD ADDED FOR IMMIGRANT CREATION ---
-    def create_initial_haplotypes_pure(self, markers, marker_freqs_map):
-        """
-        Helper function to build a homozygous haplotype when the population frequency
-        for the 'PA' allele is fixed at 1.0 or 0.0. Skips random sampling.
-        """
-        hapA_alleles = []
-        hapB_alleles = []
-        
-        for m in markers:
-            freq = marker_freqs_map[m['marker_id']]
-            # If freq is 1.0 (PA/0 allele), the allele is 0. If freq is 0.0 (PB/1 allele), the allele is 1.
-            allele = 0 if freq == 1.0 else 1 
-            
-            hapA_alleles.append(allele)
-            hapB_alleles.append(allele)
+        offspring_population = Population(gen_label)
 
-        return (np.array(hapA_alleles, dtype=np.int8), np.array(hapB_alleles, dtype=np.int8))
-    
-    # --------------------------------------------------------
+        for i in range(n_offspring):
+            parent1 = random.choice(parents_A)
+            parent2 = random.choice(parents_B)
+
+            offspring_id = f"{gen_label}_{i}"
+
+            child, _, _ = self.mate(
+                parent1=parent1,
+                parent2=parent2,
+                crossover_dist={1: 1.0},
+                pedigree_recording=pedigree_recording,
+                track_blocks=track_blocks,
+                track_junctions=track_junctions,
+                generation=gen_label,
+                new_offspring_id=offspring_id
+            )
+
+            offspring_population.add_individual(child)
+
+        return offspring_population
+
+    # ================================================================
+    # FOUNDER / IMMIGRANT CREATION
+    # ================================================================
 
     def create_initial_haplotypes(self, marker_freqs_map):
-        """
-        Creates two haplotypes for a founder individual based on a map of marker allele frequencies.
-        This is the method for creating founders that reflect source population variation.
-        """
         haplotypes = {}
-        for chrom in self.chromosome_structure.keys():
+        for chrom in self.chromosome_structure:
             markers = self.chromosome_structure[chrom]
-            
-            hapA_alleles = [0 if random.random() < marker_freqs_map[m['marker_id']] else 1 for m in markers]
-            hapB_alleles = [0 if random.random() < marker_freqs_map[m['marker_id']] else 1 for m in markers]
-        
-            haplotypes[chrom] = (np.array(hapA_alleles, dtype=np.int8), np.array(hapB_alleles, dtype=np.int8))
-            
+            hapA = [
+                0 if random.random() < marker_freqs_map[m['marker_id']] else 1
+                for m in markers
+            ]
+            hapB = [
+                0 if random.random() < marker_freqs_map[m['marker_id']] else 1
+                for m in markers
+            ]
+            haplotypes[chrom] = (
+                np.array(hapA, dtype=np.int8),
+                np.array(hapB, dtype=np.int8)
+            )
         return haplotypes
-    
+
+    def create_pure_immigrant(self, individual_id, generation, pop_label):
+        immigrant_haplotypes = {}
+        fixed = 0 if pop_label == 'PA' else 1
+
+        for chrom, markers in self.chromosome_structure.items():
+            n = len(markers)
+            immigrant_haplotypes[chrom] = (
+                np.full(n, fixed, dtype=np.int8),
+                np.full(n, fixed, dtype=np.int8)
+            )
+
+        return Individual(
+            individual_id=individual_id,
+            generation=generation,
+            genome=Genome(immigrant_haplotypes),
+            parent1_id=None,
+            parent2_id=None
+        )
+
+    # ================================================================
+    # ANALYTICS / OUTPUT
+    # ================================================================
+
     def calculate_hi_het(self, individual):
-        """
-        Calculates Hybrid Index (HI) and Heterozygosity (HET) for an individual.
-        """
-        total_markers = 0
-        sum_alleles = 0
-        heterozygous_markers = 0
-        
-        for chrom_id in self.chromosome_structure.keys():
-            hapA, hapB = individual.genome.chromosomes[chrom_id]
-            
-            total_markers += len(hapA)
-            sum_alleles += np.sum(hapA) + np.sum(hapB)
-            
-            heterozygous_markers += np.sum(hapA != hapB)
-            
-        hi = ((2 * total_markers) - sum_alleles) / (2 * total_markers) if total_markers > 0 else 0
-        het = heterozygous_markers / total_markers if total_markers > 0 else 0
-        
-        return hi, het
+        total = sum(len(h[0]) for h in individual.genome.chromosomes.values())
+        alleles = sum(
+            np.sum(h[0]) + np.sum(h[1])
+            for h in individual.genome.chromosomes.values()
+        )
+        het = sum(
+            np.sum(h[0] != h[1])
+            for h in individual.genome.chromosomes.values()
+        )
+
+        hi = ((2 * total) - alleles) / (2 * total) if total else 0
+        return hi, het / total if total else 0
 
     def get_genotypes(self, individual, md_prob_override=None):
-        """
-        Returns a flat list of genotypes for an individual across all markers,
-        with missing data introduced.
-        """
         genotypes = []
-        for chrom_id, markers in self.chromosome_structure.items():
-            hapA, hapB = individual.genome.chromosomes[chrom_id]
-            
-            for i, marker in enumerate(markers):
-                md_prob = 0.0
-                
-                if 'md_prob' in marker:
-                    md_prob = marker['md_prob']
-                elif md_prob_override is not None:
-                    md_prob = md_prob_override
-
-                if random.random() < md_prob:
-                    genotype = './.'
-                else:
-                    genotype = f"{hapA[i]}|{hapB[i]}"
-
+        for chrom, markers in self.chromosome_structure.items():
+            hapA, hapB = individual.genome.chromosomes[chrom]
+            for i, m in enumerate(markers):
+                md = m.get('md_prob', md_prob_override or 0.0)
+                gt = './.' if random.random() < md else f"{hapA[i]}|{hapB[i]}"
                 genotypes.append({
                     'individual_id': individual.individual_id,
-                    'marker_id': marker['marker_id'],
-                    'chromosome': chrom_id,
-                    'base_pair': marker['base_pair'],
-                    'genotype': genotype
+                    'marker_id': m['marker_id'],
+                    'chromosome': chrom,
+                    'position': m['position'],
+                    'genotype': gt
                 })
         return genotypes
-    
+
     def get_ancestry_blocks(self, individual):
-        """
-        Tracks ancestry blocks for a given individual.
-        """
-        blocks_data = []
-        
-        for chrom_id, markers in self.chromosome_structure.items():
+        blocks = []
+        for chrom, markers in self.chromosome_structure.items():
             if not markers:
                 continue
 
-            marker_positions_cm = self.marker_positions_arrays[chrom_id]
-            marker_ids = np.array([m['marker_id'] for m in markers])
+            pos = self.marker_positions_arrays[chrom]
+            ids = np.array([m['marker_id'] for m in markers])
 
-            for hap_idx, hap in enumerate(individual.genome.chromosomes[chrom_id]):
-                
-                transition_indices = np.where(np.diff(hap) != 0)[0] + 1
+            for h_idx, hap in enumerate(individual.genome.chromosomes[chrom]):
+                transitions = np.where(np.diff(hap) != 0)[0] + 1
+                starts = np.concatenate(([0], transitions))
+                ends = np.concatenate((transitions - 1, [len(hap) - 1]))
 
-                block_start_indices = np.concatenate(([0], transition_indices))
-                block_end_indices = np.concatenate((transition_indices - 1, [len(hap) - 1]))
-
-                ancestries = hap[block_start_indices]
-                start_cms = marker_positions_cm[block_start_indices]
-                end_cms = marker_positions_cm[block_end_indices]
-                start_marker_ids = marker_ids[block_start_indices]
-                end_marker_ids = marker_ids[block_end_indices]
-                
-                for i in range(len(block_start_indices)):
-                    ancestry_label = 'PA' if ancestries[i] == 0 else 'PB'
-                    
-                    blocks_data.append({
+                for s, e in zip(starts, ends):
+                    blocks.append({
                         'individual_id': individual.individual_id,
-                        'chromosome': chrom_id,
-                        'haplotype': hap_idx + 1,
-                        'start_cm': start_cms[i],
-                        'end_cm': end_cms[i],
-                        'start_marker_id': start_marker_ids[i],
-                        'end_marker_id': end_marker_ids[i],
-                        'ancestry': ancestry_label
+                        'chromosome': chrom,
+                        'haplotype': h_idx + 1,
+                        'start_cm': pos[s],
+                        'end_cm': pos[e],
+                        'start_marker_id': ids[s],
+                        'end_marker_id': ids[e],
+                        'ancestry': 'PA' if hap[s] == 0 else 'PB'
                     })
 
-        return blocks_data
+        return blocks
 
 # HELPER FUNCTIONS
 
@@ -489,17 +409,17 @@ def create_default_markers(args, n_markers, n_chromosomes, pA_freq, pB_freq, md_
             marker_id = f"M{marker_counter + 1}"
 
             if args.map_generate:
-                base_pair = random.uniform(0.0, 100.0)
+                position = random.uniform(0.0, 100.0)
             else:
                 # Corrected uniform spacing for each chromosome
                 # This ensures spacing is based on the number of markers on that specific chromosome
                 spacing_cm = 100.0 / (num_markers_on_chr + 1)
-                base_pair = (i + 1) * spacing_cm
+                position = (i + 1) * spacing_cm
             
             marker_data = {
                 'marker_id': marker_id,
                 'chromosome': chromosome_label,
-                'base_pair': base_pair,
+                'position': position,
                 'allele_freq_A': pA_freq[marker_counter],
                 'allele_freq_B': pB_freq[marker_counter],
                 'md_prob': md_prob[marker_counter]
@@ -549,7 +469,7 @@ def read_allele_freq_from_csv(file_path, args):
         df['chromosome'] = chrom_list
         print(f"Warning: 'chromosome' column not found. Assigning markers to {num_chrs} chromosomes.")
 
-    # OPTIONAL 'base_pair' check
+    # OPTIONAL 'position' check
     if 'position' not in df.columns:
         num_markers = len(df)
         if args.map_generate:
@@ -759,18 +679,20 @@ def perform_cross_task(task, num_chromosomes):
         'junctions_data': junctions
     }
 
-def perform_batch_cross_task(batch_of_tasks):
+'''def perform_batch_cross_task(batch_of_tasks):
     """
     A helper function to run a batch of crosses in a single process.
     """
     batch_results = []
     for task in batch_of_tasks:
-        batch_results.append(perform_cross_task(task, num_chromosomes))
-    return batch_results
+        batch_results.append(perform_cross_task(task, num_chrs))
+    return batch_results '''
+
 def simulate_generations(
     simulator,
     initial_poPA,
     initial_poPB,
+    hg1_pop,
     crossing_plan,
     number_offspring,
     crossover_dist,
@@ -787,11 +709,6 @@ def simulate_generations(
     """
     Runs the simulation for the specified generations based on the crossing plan.
     """
-    import os
-    import csv
-    import numpy as np
-    import random
-    
     # Pre-calculate the index where immigration should start
     try:
         # Find the index of the start label in the list of all generation labels from the crossing plan
@@ -803,7 +720,7 @@ def simulate_generations(
     # Retrieve the new interval setting from args (defaulting to 1 if not set)
     immigrate_interval = getattr(args, 'immigrate_interval', 1)
 
-    populations_dict = {'PA': initial_poPA, 'PB': initial_poPB}
+    populations_dict = {'PA': initial_poPA, 'PB': initial_poPB, "HG1": hg1_pop}
     
     hi_het_data = {}
     
@@ -1308,60 +1225,62 @@ def parse_list_or_value(input_str, num_markers):
     except (ValueError, AttributeError) as e:
         raise ValueError(f"Invalid format for list/value: {input_str}. Must be a single float or a comma-separated list of floats.")
 
-def _parse_crossover_distribution(dist_str):
+import ast
+import numpy as np
+
+def _parse_crossover_distribution(dist_input):
     """
-    Parses a string representing a crossover distribution and validates it.
-    Input format: '{"0": 0.2, "1": 0.8}'
+    Parses a distribution. Handles actual dicts, JSON strings, 
+    and Python-style dict strings.
     """
+    # If it's already a dict (e.g. from a default value), just return it
+    if isinstance(dist_input, dict):
+        return dist_input
+
     try:
-        # Step 1: Parse the JSON string. Keys will be strings at this point.
-        dist = json.loads(dist_str.replace("'", '"'))
+        # 1. Clean the string (removes accidental backslashes from terminal escaping)
+        cleaned_input = dist_input.replace('\\', '')
+        
+        # 2. Use literal_eval (handles '{0:1}' and '{"0":1}' equally well)
+        dist = ast.literal_eval(cleaned_input)
 
         if not isinstance(dist, dict):
-            raise ValueError("Distribution must be a dictionary.")
+            raise ValueError("Input must be a dictionary format.")
 
-        # Step 2: Create a new dictionary with keys converted to integers.
-        # This is the crucial change to fix the error.
-        try:
-            dist = {int(k): v for k, v in dist.items()}
-        except (ValueError, TypeError):
-            raise ValueError("All keys must be strings that represent integers.")
+        # 3. Standardize keys to integers and values to floats
+        dist = {int(k): float(v) for k, v in dist.items()}
 
-        # Step 3: Validate the values are numbers and the probabilities sum to 1.0.
+        # 4. Validate Sum
         if not np.isclose(sum(dist.values()), 1.0):
-            raise ValueError(f"Probabilities must sum to 1.0, but they sum to {sum(dist.values())}.")
+            raise ValueError(f"Probabilities must sum to 1.0 (got {sum(dist.values())})")
 
         return dist
 
-    except (json.JSONDecodeError, ValueError) as e:
-        # Re-raise the exception with a more descriptive message.
-        raise ValueError(f"Invalid format for crossover distribution: {dist_str}. Expected a dictionary form string, e.g., '{{\"0\": 0.2, \"1\": 0.8}}'. Error: {e}")
+    except (ValueError, SyntaxError, TypeError) as e:
+        raise ValueError(f"Invalid distribution format: {dist_input}. Error: {e}")
 
 def _parse_number_offspringribution(dist_str):
     """
-    Parses a string representing an offspring distribution and validates it.
-    Accepts both JSON-style and Python-dict-style inputs.
-    Example valid inputs:
-        '{"0": 0.2, "1": 0.8}'
-        '{0: 0.2, 1: 0.8}'
+    Parses a string representing an offspring distribution using ast.
+    Accepts: '{"0": 0.2, "1": 0.8}' or '{0: 0.2, 1: 0.8}'
     """
     try:
-        # First try JSON
-        dist = json.loads(dist_str.replace("'", '"'))
-    except json.JSONDecodeError:
-        # Fallback: try Python dict syntax
-        try:
-            dist = ast.literal_eval(dist_str)
-        except Exception as e:
-            raise ValueError(
-                f"Invalid format for offspring distribution: {dist_str}. "
-                f"Could not parse as JSON or Python dict. Error: {e}"
-            )
+        # We replace single quotes with double quotes just in case, 
+        # but ast.literal_eval handles both anyway.
+        dist = ast.literal_eval(dist_str)
+        
+    except (ValueError, SyntaxError) as e:
+        # This catches formatting issues without needing the 'json' library
+        raise ValueError(
+            f"Invalid format for offspring distribution: {dist_str}. "
+            f"Ensure it is a valid dictionary. Error: {e}"
+        )
 
     if not isinstance(dist, dict):
         raise ValueError("Distribution must be a dictionary.")
 
     try:
+        # Standardize keys to int and values to float
         dist = {int(k): float(v) for k, v in dist.items()}
     except (ValueError, TypeError):
         raise ValueError("All keys must be convertible to int and values to float.")
@@ -1482,6 +1401,9 @@ def handle_outputs(args, hi_het_data):
 
 # MAIN RUN AND OUTPUTS
 
+# =================================================================
+# MAIN EXECUTION BLOCK
+# =================================================================
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="A genetic simulation script for backcross and hybrid crossing generations.",
@@ -1490,280 +1412,161 @@ if __name__ == "__main__":
 
     # Input Options
     input_options = parser.add_argument_group('Input Options')
-    input_options.add_argument("-f", "--file", type=str, help="Path to a CSV input file with known marker data. This overrides the default parameters.")
+    input_options.add_argument("-f", "--file", type=str, help="Path to a CSV input file with known marker data.")
     
     # Parameters for both modes
     general_params = parser.add_argument_group('General Simulation Parameters')
-    general_params.add_argument("-npa", "--num_poPA", type=int, default=10, help="Number of individuals in the starting Population A (default: 10).")
-    general_params.add_argument("-npb", "--num_poPB", type=int, default=10, help="Number of individuals in the starting Population B (default: 10).")
+    general_params.add_argument("-npa", "--num_poPA", type=int, default=10, help="Size of starting Population A.")
+    general_params.add_argument("-npb", "--num_poPB", type=int, default=10, help="Size of starting Population B.")
     general_params.add_argument("-no", "--num_offspring", type=str, default='{"2": 1.0}',
-                                 help="""A probability distribution for number of offspring per mating pair.
-Input as a string dictionary, e.g., '{"0":0.2, "1": 0.7, "2": 0.1}'. (default: '{"2": 1.0}')""")
-    general_params.add_argument("-HG", "--hybrid_generations", type=int, default=1, help="Number of hybrid (HG) generations to simulate (default: 1).")
-    general_params.add_argument("-BCA", "--backcross_A", type=int, default=0, help="Number of backcross generations to Population A (default: 0).")
-    general_params.add_argument("-BCB", "--backcross_B", type=int, default=0, help="Number of backcross generations to Population B (default: 0).")
-    general_params.add_argument("-cd", "--crossover_dist", type=str, default='{"1": 1.0}',
-                                 help="""A probability distribution for crossovers per chromosome.
-Input as a string dictionary, e.g., '{"1": 0.8, "2": 0.2}'. (default: '{"1": 1.0}')""")
-    general_params.add_argument("--seed", type=int, default=None, help="A seed for the random number generator (default: None).")
-    general_params.add_argument("-nreps", "--num_replicates", type=int, default=1, help="Number of simulation replicates to run (default:1))")
-    general_params.add_argument("-repid", "--replicate_id", type=int, required=True, help='The ID of the current replicate for output filenames.')
-    general_params.add_argument("--threads", type=int, default=None, help="Number of CPU cores to use (default: min(16, available cores))")
+                                 help="Offspring distribution, e.g., '{\"0\":0.2, \"2\": 0.8}'.")
+    general_params.add_argument("-HG", "--hybrid_generations", type=int, default=1, help="Number of HG generations.")
+    general_params.add_argument("-BCA", "--backcross_A", type=int, default=0, help="Number of BC generations to Pop A.")
+    general_params.add_argument("-BCB", "--backcross_B", type=int, default=0, help="Number of BC generations to Pop B.")
+    general_params.add_argument("-cd", "--crossover_dist", type=str, default='{"1": 1.0}', help="Crossover distribution.")
+    general_params.add_argument("--seed", type=int, default=None, help="Random seed.")
+    general_params.add_argument("-nreps", "--num_replicates", type=int, default=1, help="Total replicates.")
+    general_params.add_argument("-repid", "--replicate_id", type=int, required=True, help="Current replicate ID.")
+    general_params.add_argument("--threads", type=int, default=None, help="CPU cores.")
     
-    # Parameters for internal defaults
+    # Internal Parameters
     simple_group = parser.add_argument_group('Internal Default Parameters')
-    simple_group.add_argument("-nm", "--num_marker", type=int, default=1000, help="Number of markers to simulate per chromosome (default: 1000).")
-    simple_group.add_argument("-nc", "--num_chrs", type=int, default=1, help="Number of chromosomes to simulate (default: 1).")
-    simple_group.add_argument("-afA", "--allele_freq_popA", type=str, default="1.0", help="Allele freq. of allele '0' for Pop A. Can be single value or comma-separated list (default: '1.0').")
-    simple_group.add_argument("-afB", "--allele_freq_popB", type=str, default="0.0", help="Allele freq. of allele '0' for Pop B (default: '0.0').")
-    simple_group.add_argument("-md", "--missing_data", type=str, default="0.0", help="Proportion of missing data per marker (default: '0.0').")
-    simple_group.add_argument('--num_immigrants_pa', type=int, default=0, help='The number of pure PA individuals to inject as immigrants.')
-    simple_group.add_argument('--num_immigrants_pb', type=int, default=0, help='The number of pure PB individuals to inject as immigrants.')
-    simple_group.add_argument('--immigrate_start_gen', type=str, default=None, help='The generation label (e.g. HG2) at which immigration begins.')
-    simple_group.add_argument('--immigrate_interval', type=int, default=1, # Default of 1 means immigration happens every generation (current behavior) 
-    help='The number of generations between immigration events. Default is 1 (every generation).'
-)
+    simple_group.add_argument("-nm", "--num_marker", type=int, default=1000, help="Markers per chromosome.")
+    simple_group.add_argument("-nc", "--num_chrs", type=int, default=1, help="Number of chromosomes.")
+    simple_group.add_argument("-afA", "--allele_freq_popA", type=str, default="1.0")
+    simple_group.add_argument("-afB", "--allele_freq_popB", type=str, default="0.0")
+    simple_group.add_argument("-md", "--missing_data", type=str, default="0.0")
+    simple_group.add_argument('--num_immigrants_pa', type=int, default=0)
+    simple_group.add_argument('--num_immigrants_pb', type=int, default=0)
+    simple_group.add_argument('--immigrate_start_gen', type=str, default=None)
+    simple_group.add_argument('--immigrate_interval', type=int, default=1)
+
     # Tracking and Output
     tracking_group = parser.add_argument_group('Tracking and Output Options')
-    tracking_group.add_argument("-pr", "--pedigree_recording", action="store_true",
-                                 help="Store and output the parental IDs for each individual. This also produces an ancestry CSV file.")
-    tracking_group.add_argument("-pv", "--pedigree_visual", nargs='?', const=True, default=False, help="Generate a pedigree tree visualisation. Provide an individual ID to start from a specific point. Requires pedigree recording flag")
-    tracking_group.add_argument('-fp', '--full_pedigree_visual', action='store_true', help="Generate a pedigree tree visualisation for the entire simulation.")
-    tracking_group.add_argument("-tb", "--track_blocks", action="store_true",
-                                 help="Tracks and outputs blocks of continuous ancestry on chromosomes. This also produces a blocks CSV file.")
-    tracking_group.add_argument("-tj", "--track_junctions", action="store_true",
-                                 help="Tracks and outputs the positions of ancestry junctions (crossovers). This also produces a junctions CSV file.")
-    tracking_group.add_argument("-gmap", "--map_generate", action="store_true",
-                                 help="""Randomly assigns marker positions. When using internal default parameters, this overrides uniform placement. This is used only if 'base_pair' is not in the input file.""")
-    tracking_group.add_argument("-tp", "--triangle_plot", action="store_true",
-                                 help="Generates a triangle plot of allele frequencies.")
-    tracking_group.add_argument("-ol", "--output_locus", action="store_true", help="Outputs locus genotype data to CSV.")
-    tracking_group.add_argument("-olf", "--output_locus_file", type=str, required=False, help="File path to save the locus data.")
-    tracking_group.add_argument("-oh", "--output_hi_het", action="store_true", help="Outputs individual HI and HET data to CSV.")
-    tracking_group.add_argument("-pp", "--population_plot", action="store_true", help="Generates a line plot of population size per generation.")
+    tracking_group.add_argument("-pr", "--pedigree_recording", action="store_true")
+    tracking_group.add_argument("-pv", "--pedigree_visual", nargs='?', const=True, default=False)
+    tracking_group.add_argument('-fp', '--full_pedigree_visual', action='store_true')
+    tracking_group.add_argument("-tb", "--track_blocks", action="store_true")
+    tracking_group.add_argument("-tj", "--track_junctions", action="store_true")
+    tracking_group.add_argument("-gmap", "--map_generate", action="store_true")
+    tracking_group.add_argument("-tp", "--triangle_plot", action="store_true")
+    tracking_group.add_argument("-ol", "--output_locus", action="store_true")
+    tracking_group.add_argument("-oh", "--output_hi_het", action="store_true")
+    tracking_group.add_argument("-pp", "--population_plot", action="store_true")
 
     # Output Arguments
     tracking_argument_group = parser.add_argument_group('Output Arguments')
-    tracking_argument_group.add_argument("-on", "--output_name", type=str, default="results",
-                                         help="Base name for all output files (default: 'results').")
-    tracking_argument_group.add_argument("-od", "--output_dir", type=str, default="simulation_outputs",
-                                         help="Directory to save output files (default: 'simulation_outputs').")
+    tracking_argument_group.add_argument("-on", "--output_name", type=str, default="results")
+    tracking_argument_group.add_argument("-od", "--output_dir", type=str, default="simulation_outputs")
 
     args = parser.parse_args()
 
+    # --- 1. SEEDING ---
     print(f"\nStarting Simulation Replicate {args.replicate_id}")
-
-    # Set the random seed for this replicate to ensure unique outputs
     current_seed = args.seed if args.seed is not None else int(time.time()) + args.replicate_id
     print(f"Setting random seed to: {current_seed}")
     random.seed(current_seed)
     np.random.seed(current_seed)
 
-    # Determine which mode to run in and get marker data
+    # --- 2. MARKER DATA LOADING ---
     known_markers_data = []
-
-    # Conditional input file logic
     if args.file:
-        print(f"\nRunning with input file: {args.file}.")
+        print(f"Running with input file: {args.file}.")
         try:
             known_markers_data = read_allele_freq_from_csv(args.file, args)
         except (FileNotFoundError, ValueError) as e:
-            print(f"Error reading input file: {e}")
-            exit(1)
+            print(f"Error reading input file: {e}"); exit(1)
     else:
-        # This code block will run if no --file is provided.
-        print("\nRunning with given parameters.")
-        try:
-            pA_freqs = parse_list_or_value(args.allele_freq_popA, args.num_marker)
-            pB_freqs = parse_list_or_value(args.allele_freq_popB, args.num_marker)
-            md_probs = parse_list_or_value(args.missing_data, args.num_marker)
-        except ValueError as e:
-            print(f"Error with parameters: {e}")
-            exit(1)
-            
+        print("Running with default parameters.")
+        pA_freqs = parse_list_or_value(args.allele_freq_popA, args.num_marker)
+        pB_freqs = parse_list_or_value(args.allele_freq_popB, args.num_marker)
+        md_probs = parse_list_or_value(args.missing_data, args.num_marker)
+        
         known_markers_data = create_default_markers(
-            args=args,
-            n_markers=args.num_marker,
-            n_chromosomes=args.num_chrs,
-            pA_freq=pA_freqs,
-            pB_freq=pB_freqs,
-            md_prob=md_probs,
+            args=args, n_markers=args.num_marker, n_chromosomes=args.num_chrs,
+            pA_freq=pA_freqs, pB_freq=pB_freqs, md_prob=md_probs,
         )
 
-    # Start the recombination simulator
+    # --- 3. INITIALIZE SIMULATOR & PARENTS ---
     recomb_simulator = RecombinationSimulator(known_markers_data=known_markers_data, num_chromosomes=args.num_chrs)
-
-    # Create the ancestral populations
-    print("\nCreating initial populations (PA and PB)")
+    print("Creating initial populations (PA and PB)")
     poPA = create_initial_populations_integrated(recomb_simulator, args.num_poPA, known_markers_data, 'PA')
     poPB = create_initial_populations_integrated(recomb_simulator, args.num_poPB, known_markers_data, 'PB')
-    '''
-    # Original parent genotype saving block (uncommented for pipeline fix)
-    # Create a list to hold all genotype data
-    all_genotype_data = []
-    
-    # Get and store genotypes for all individuals in Population A
-    for individual in poPA.individuals.values():
-        genotypes = recomb_simulator.get_genotypes(individual)
-        all_genotype_data.extend(genotypes)
 
-    # Get and store genotypes for all individuals in Population B
-    for individual in poPB.individuals.values():
-        genotypes = recomb_simulator.get_genotypes(individual)
-        all_genotype_data.extend(genotypes)
-
-    # Convert the list of dictionaries to a pandas DataFrame
-    df_genotypes = pd.DataFrame(all_genotype_data)
-
-    # Export the DataFrame to a CSV file
-    parent_genotypes_dir = os.path.join(args.output_dir, "results")
-    os.makedirs(parent_genotypes_dir, exist_ok=True)
-    
-    # New: Use a dynamic filename to avoid overwriting
-    output_file = os.path.join(parent_genotypes_dir, f"parent_genotypes_rep_{args.replicate_id}.csv")
-    df_genotypes.to_csv(output_file, index=False)
-
-    print(f"\nGenotype data for PA and PB exported to {output_file}")
-'''
-    # Collect initial founder locus data
-    initial_locus_data = []
-    for ind in poPA.individuals.values():
-        initial_locus_data.extend(recomb_simulator.get_genotypes(ind))
-    for ind in poPB.individuals.values():
-        initial_locus_data.extend(recomb_simulator.get_genotypes(ind))
-    
-    # Convert to DataFrame to apply missing data
-    initial_locus_df = pd.DataFrame(initial_locus_data)
-
-    # The hi_het data is collected in a single, flat dictionary, matching the output of simulate_generations
-    initial_hi_het_data = {}
-    
-    for ind in poPA.individuals.values():
-        hi, het = recomb_simulator.calculate_hi_het(ind)
-        initial_hi_het_data[ind.individual_id] = {'HI': hi, 'HET': het}
-    
-    for ind in poPB.individuals.values():
-        hi, het = recomb_simulator.calculate_hi_het(ind)
-        initial_hi_het_data[ind.individual_id] = {'HI': hi, 'HET': het}
-              
-    initial_locus_data = initial_locus_df.to_dict('records')
-
-    # Determine crossover mode and distribution
+    # --- 4. PARSE DISTRIBUTIONS ---
     try:
         crossover_dist = _parse_crossover_distribution(args.crossover_dist)
-        # Add the number_offspring parsing right here
         number_offspring = _parse_number_offspringribution(args.num_offspring)
-
-        print(f"Crossover distribution set to: {crossover_dist}")
-        print(f"Offspring distribution set to: {number_offspring}")
-
+        print(f"Using distributions: Crossover={crossover_dist}, Offspring={number_offspring}")
     except ValueError as e:
-        print(f"Error parsing distributions: {e}")
-        exit(1)
-            
-# --- START FINAL REVISED IMMIGRATION VALIDATION AND SETUP ---
+        print(f"Error: {e}"); exit(1)
 
-    # All variables are initialized from the args object directly
+    # --- 5. IMMIGRATION VALIDATION ---
     num_immigrants_pa = args.num_immigrants_pa
     num_immigrants_pb = args.num_immigrants_pb
-    immigrate_start_gen_label = args.immigrate_start_gen # INITIALIZED HERE.
+    immigrate_start_gen_label = args.immigrate_start_gen
+    if (num_immigrants_pa + num_immigrants_pb) > 0 and not immigrate_start_gen_label:
+        print("\nERROR: Immigration counts set, but --immigrate_start_gen is missing."); exit(1)
 
-    total_immigrants = num_immigrants_pa + num_immigrants_pb
-
-    if total_immigrants > 0:
-        # 1. Validation Check: If any immigration count is set, the start generation MUST be specified.
-        if not immigrate_start_gen_label:
-            print("\nERROR: Immigration counts were specified, but the starting generation label (--immigrate_start_gen_label) is missing.")
-            print("Please specify the generation label (e.g., --immigrate_start_gen_label HG2).")
-            exit(1)
-
-        # 2. Success Message: Report the detailed plan.
-        print("-" * 50)
-        print("IMMIGRATION ACTIVATED:")
-        print(f"  - PA Individuals: {num_immigrants_pa}")
-        print(f"  - PB Individuals: {num_immigrants_pb}")
-        print(f"  - Total Influx: {total_immigrants}")
-        print(f"  - Starting Gen: {immigrate_start_gen_label}")
-        print("-" * 50)
-        
-    # NOTE: The 'else' block is not needed here. If total_immigrants == 0, 
-    # 'immigrate_start_gen_label' remains whatever the user set it to (default None), 
-    # which is correct for the function call.
-
-# --- END FINAL REVISED IMMIGRATION VALIDATION AND SETUP ---
-
-    # Build the full crossing plan using the new flags
+    # --- 6. BUILD CROSSING PLAN ---
     print("Building crossing plan")
     crossing_plan = []
-
-    # Hybrid generations (HG1, HG2, etc.)
     if args.hybrid_generations > 0:
         crossing_plan.extend(build_hybrid_generations(num_generations=args.hybrid_generations))
-
-    # Backcross generations to Pop A (BC1A, BC2A, etc.)
+    
     if args.backcross_A > 0:
-        # The backcross will start from the last hybrid generation created.
-        # If hybrid_generations is 0, the starting point is HG1.
-        initial_hybrid_label = f'HG{args.hybrid_generations}' if args.hybrid_generations > 0 else 'HG1'
-        crossing_plan.extend(build_backcross_generations(
-            base_name='BC', 
-            initial_hybrid_gen_label=initial_hybrid_label, 
-            pure_pop_label='PA', 
-            num_backcross_generations=args.backcross_A
-        ))
+        initial_label = f'HG{args.hybrid_generations}' if args.hybrid_generations > 0 else 'HG1'
+        crossing_plan.extend(build_backcross_generations('BC', initial_label, 'PA', args.backcross_A))
 
-    # Backcross generations to Pop B (BC1B, BC2B, etc.)
     if args.backcross_B > 0:
-        # The backcross will start from the last hybrid generation created.
-        # If hybrid_generations is 0, the starting point is HG1.
-        initial_hybrid_label = f'HG{args.hybrid_generations}' if args.hybrid_generations > 0 else 'HG1'
-        crossing_plan.extend(build_backcross_generations(
-            base_name='BC', 
-            initial_hybrid_gen_label=initial_hybrid_label, 
-            pure_pop_label='PB', 
-            num_backcross_generations=args.backcross_B
-        ))
+        initial_label = f'HG{args.hybrid_generations}' if args.hybrid_generations > 0 else 'HG1'
+        crossing_plan.extend(build_backcross_generations('BC', initial_label, 'PB', args.backcross_B))
 
-    # Start the timer
+    # --- 7. CREATE F1 (HG1) GENERATION ---
+    # This acts as the bridge between parents and the rest of the plan
+    print("Generating HG1 (F1) from PA and PB...")
+    hg1_population = recomb_simulator.mate_populations(
+        pop1=poPA, pop2=poPB, 
+        offspring_dist=number_offspring, 
+        gen_label="HG1"
+    )
+
+    # --- 8. EXECUTION ---
     start_time = time.time()
-
-    # Run the simulation
-    print("Starting simulation")
+    print("Starting simulation...")
     populations_dict, hi_het_data = simulate_generations(
         simulator=recomb_simulator,
         initial_poPA=poPA,
         initial_poPB=poPB,
+        hg1_pop=hg1_population, # Passing pre-made F1
         crossing_plan=crossing_plan,
         number_offspring=number_offspring,
         crossover_dist=crossover_dist,
         track_ancestry=args.pedigree_recording,
         track_blocks=args.track_blocks,
         track_junctions=args.track_junctions,
-        output_locus=args.output_locus, 
+        output_locus=args.output_locus,
         verbose=True,
         immigrate_start_gen_label=immigrate_start_gen_label,
         max_processes=args.threads,
         args=args 
     )
 
-    # End the timer and calculate the elapsed time
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    print(f"\nSimulation {args.replicate_id} complete. Runtime: {elapsed_time:.2f} seconds")
+    # --- 9. OUTPUT HANDLING ---
+    # Compile HI/HET for Parents + Hybrids
+    initial_hi_het = {}
+    for ind in list(poPA.individuals.values()) + list(poPB.individuals.values()):
+        hi, het = recomb_simulator.calculate_hi_het(ind)
+        initial_hi_het[ind.individual_id] = {'HI': hi, 'HET': het}
     
-    # Create a temporary dictionary for all HI/HET data
-    all_hi_het_data = {}
-    all_hi_het_data.update(initial_hi_het_data)
-    all_hi_het_data = {**initial_hi_het_data, **hi_het_data}
+    all_hi_het_data = {**initial_hi_het, **hi_het_data}
 
-    # New: Modify the output name to include the replicate ID
+    # Update output name with replicate ID
     original_output_name = args.output_name
     args.output_name = f"{original_output_name}_rep_{args.replicate_id}"
 
-    # Call your outputs handler, which will now use the new name
     handle_outputs(args, all_hi_het_data)
     
-    # New: Reset the output name for the next iteration
+    runtime = time.time() - start_time
+    print(f"\nReplicate {args.replicate_id} complete. Runtime: {runtime:.2f}s")
     args.output_name = original_output_name
-    
-    print(f"Finished Simulation Replicate {args.replicate_id}")
