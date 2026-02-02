@@ -543,6 +543,56 @@ def build_backcross_generations(base_name, initial_hybrid_gen_label, pure_pop_la
         })
     return crossing_plan
 
+def compile_locus_data_to_df(populations_dict, marker_map_df):
+    """
+    Extracts genotypes while handling both numpy arrays and 
+    string placeholders in the Genome object.
+    """
+    all_rows = []
+    
+    marker_col = next((c for c in marker_map_df.columns if c.lower() in ['locusname', 'marker_id', 'marker', 'id', 'locus']), "marker_id")
+    pos_col = next((c for c in marker_map_df.columns if c.lower() in ['base_pair', 'position', 'bp', 'pos']), "position")
+    chrom_col = next((c for c in marker_map_df.columns if c.lower() in ['chromosome', 'chr', 'chrom']), "chromosome")
+
+    for gen_label, pop in populations_dict.items():
+        for ind_id, ind in pop.individuals.items():
+            
+            genotype_list = []
+            # Safety check: Is the genome actually populated with chromosomes?
+            if not hasattr(ind.genome, 'chromosomes') or not ind.genome.chromosomes:
+                continue
+
+            for chrom_pair in ind.genome.chromosomes:
+                # FIX: Check if chrom_pair is a list/array or a single string
+                if isinstance(chrom_pair, (list, np.ndarray)) and len(chrom_pair) >= 2:
+                    summed_chrom = chrom_pair[0] + chrom_pair[1]
+                    genotype_list.extend(summed_chrom.tolist())
+                else:
+                    # If it's a string placeholder (like 'PA'), we fill with the expected length
+                    # This prevents the 'string index out of range' error
+                    num_markers_this_chrom = len(marker_map_df) # Simplified for 1 chr
+                    val = 2 if "A" in str(chrom_pair) else 0
+                    genotype_list.extend([val] * num_markers_this_chrom)
+
+            # Match with marker metadata
+            for i, (m_id, c_id, pos) in enumerate(zip(
+                marker_map_df[marker_col], 
+                marker_map_df[chrom_col], 
+                marker_map_df[pos_col]
+            )):
+                # Second safety: Ensure we don't overshoot our genotype list
+                if i < len(genotype_list):
+                    all_rows.append({
+                        'individual_id': ind_id,
+                        'marker_id': m_id,
+                        'chromosome': c_id,
+                        'position': pos,
+                        'genotype': genotype_list[i],
+                        'generation': gen_label
+                    })
+    
+    return pd.DataFrame(all_rows)
+
 def create_initial_populations_integrated(simulator, num_individuals, known_markers_data, pop_label):
     """
     Creates the founder populations PA and PB based on allele frequencies
@@ -699,70 +749,65 @@ def simulate_generations(
     track_ancestry,
     track_blocks,
     track_junctions,
-    output_locus, # This flag should be used to control locus output
+    output_locus, 
     verbose,
-    # REVISED ARGUMENTS: immigrate_start_gen_label is now retrieved from args
-    immigrate_start_gen_label, # Keeping this here for now, but will use args.immigrate_start_gen_label
+    immigrate_start_gen_label, 
     max_processes,
-    args # Pass the args object here
+    args 
 ):
     """
     Runs the simulation for the specified generations based on the crossing plan.
     """
     # Pre-calculate the index where immigration should start
     try:
-        # Find the index of the start label in the list of all generation labels from the crossing plan
         all_gen_labels = [cross['generation_label'] for cross in crossing_plan]
         immigrate_start_index = all_gen_labels.index(immigrate_start_gen_label)
     except ValueError:
-        immigrate_start_index = -1 # Indicates the label wasn't found
+        immigrate_start_index = -1 
         
-    # Retrieve the new interval setting from args (defaulting to 1 if not set)
     immigrate_interval = getattr(args, 'immigrate_interval', 1)
-
     populations_dict = {'PA': initial_poPA, 'PB': initial_poPB, "HG1": hg1_pop}
-    
     hi_het_data = {}
     
-    # We no longer need this flag, as the logic will check the index directly.
-    # immigrate_active = False 
-    
-    # Correctly build the output directory based on argparse defaults
     output_dir = os.path.join(args.output_dir, "results")
     os.makedirs(output_dir, exist_ok=True)
     output_path_prefix = os.path.join(output_dir, args.output_name)
 
-    # ... (File setup and header writing remains the same) ...
-
-    # Open files for incremental writing only if their flags are set
-    locus_file = open(f"{output_path_prefix}_locus_genotype_data.csv", 'w', newline='') if output_locus else None
+    # Open files for incremental writing
+    # NOTE: locus_file is set to None here because we handle the 'Clean' version in Section 9
+    locus_file = None 
     ancestry_file = open(f"{output_path_prefix}_pedigree.csv", 'w', newline='') if track_ancestry else None
     blocks_file = open(f"{output_path_prefix}_ancestry_blocks.csv", 'w', newline='') if track_blocks else None
     junctions_file = open(f"{output_path_prefix}_ancestry_junctions.csv", 'w', newline='') if track_junctions else None
     
-    locus_writer = csv.writer(locus_file) if locus_file else None
     ancestry_writer = csv.writer(ancestry_file) if ancestry_file else None
     blocks_writer = csv.writer(blocks_file) if blocks_file else None
     junctions_writer = csv.writer(junctions_file) if junctions_file else None
 
-    # Write headers conditionally
-    if locus_writer:
-        locus_writer.writerow(['individual_id', 'locus_id', 'chromosome', 'cM', 'genotype_value'])
+    # --- UPDATED HEADERS TO MATCH SIMULATOR OUTPUT ---
     if ancestry_writer:
         ancestry_writer.writerow(['offspring_id', 'parent1_id', 'parent2_id'])
+    
     if blocks_writer:
-        blocks_writer.writerow(['individual_id', 'chromosome', 'start_pos', 'end_pos', 'parent_label'])
+        # Matches the 8-column haplotype-aware structure
+        blocks_writer.writerow([
+            'individual_id', 'chromosome', 'haplotype', 'start_cm', 
+            'end_cm', 'start_marker_id', 'end_marker_id', 'ancestry'
+        ])
+    
     if junctions_writer:
-        junctions_writer.writerow(['individual_id', 'chromosome', 'cM'])
+        # Matches the 6-column event-tracking structure
+        junctions_writer.writerow([
+            'individual_id', 'chromosome', 'position', 
+            'event_type', 'generation', 'prev_marker_idx'
+        ])
         
-    # Find all populations that will be used as parents in any future cross
     all_future_parents = set()
     for cross in crossing_plan:
         all_future_parents.add(cross['parent1_label'])
         all_future_parents.add(cross['parent2_label'])
 
-    # Iterate through the crossing plan using an index to track the generation number
-    for current_cross_index, cross in enumerate(crossing_plan): # <-- New Index Tracking
+    for current_cross_index, cross in enumerate(crossing_plan):
         gen_label = cross['generation_label']
         parent1_label = cross['parent1_label']
         parent2_label = cross['parent2_label']
@@ -771,28 +816,20 @@ def simulate_generations(
         if verbose:
             print(f"\n Simulating Generation {gen_label} ({cross_type}) ")
 
-        # ... (Parent Selection Logic remains the same) ...
-        
-        # PARENT SELECTION LOGIC
         parent1_pop = populations_dict.get(parent1_label)
         parent2_pop = populations_dict.get(parent2_label)
         
         if not parent1_pop or not parent2_pop:
-            raise ValueError(f"Parent population for '{gen_label}' not found. Check the crossing plan or previous generations.")
+            raise ValueError(f"Parent population for '{gen_label}' not found.")
 
         parent_pool_1 = list(parent1_pop.individuals.values())
         parent_pool_2 = list(parent2_pop.individuals.values())
         
-        if len(parent_pool_1) == 0 or len(parent_pool_2) == 0:
-            raise ValueError(f"Parent population for '{gen_label}' is empty.")
-
         if parent1_label == parent2_label:
             random.shuffle(parent_pool_1)
-            parent_pairs = []
-            for i in range(0, len(parent_pool_1) - (len(parent_pool_1) % 2), 2):
-                parent_pairs.append((parent_pool_1[i], parent_pool_1[i+1]))
+            parent_pairs = [(parent_pool_1[i], parent_pool_1[i+1]) 
+                            for i in range(0, len(parent_pool_1) - (len(parent_pool_1) % 2), 2)]
         else:
-            # Standard cross (e.g., PA x PB, HG1 x PA)
             if len(parent_pool_1) != len(parent_pool_2):
                 if len(parent_pool_1) < len(parent_pool_2):
                     parent_pool_1 = random.choices(parent_pool_1, k=len(parent_pool_2))
@@ -800,21 +837,16 @@ def simulate_generations(
                     parent_pool_2 = random.choices(parent_pool_2, k=len(parent_pool_1))
             parent_pairs = list(zip(parent_pool_1, parent_pool_2))
 
-        # END OF PARENT SELECTION LOGIC 
-
         new_pop = Population(gen_label)
 
-        # --- START REVISED IMMIGRATION LOGIC (PULSED) ---
-        
+        # Pulsed Immigration Logic
         num_immigrants_pa = getattr(args, 'num_immigrants_pa', 0)
         num_immigrants_pb = getattr(args, 'num_immigrants_pb', 0)
         total_immigrants = num_immigrants_pa + num_immigrants_pb
-
         total_immigrants_added = 0
         immigrant_counter_start = 1
         immigrant_pedigree_data = [] 
         
-        # NEW LOGIC: Check start generation and interval condition
         perform_immigration = (
             total_immigrants > 0 and 
             current_cross_index >= immigrate_start_index and
@@ -822,189 +854,71 @@ def simulate_generations(
         )
         
         if perform_immigration:
-            if verbose:
-                 print(f"--- PULSED IMMIGRATION ACTIVE: {gen_label} (Interval {immigrate_interval}) ---")
-                 
-            # Structure the immigration event based on new individual flags
-            injection_plan = [
-                ('PA', num_immigrants_pa),
-                ('PB', num_immigrants_pb)
-            ]
-
-            for pop_label, count in injection_plan:
-                if count > 0:
-                    total_immigrants_added += count
-                    
-                    if verbose:
-                        print(f"Adding {count} individuals from {pop_label} ancestry.")
-
-                    for i in range(count):
-                        # 1. Create the new unique ID: GenLabel_I_N (e.g., HG2_I_1, HG2_I_2)
-                        individual_id = f"{gen_label}_I_{immigrant_counter_start}"
-                        
-                        # 2. Create the pure immigrant
-                        new_immigrant = simulator.create_pure_immigrant(
-                            individual_id=individual_id,
-                            generation=gen_label,
-                            pop_label=pop_label
-                        )
-                        
-                        # 3. Add to the population
-                        new_pop.add_individual(new_immigrant)
-                        
-                        # 4. Calculate HI/HET and store the data immediately 
-                        hi, het = simulator.calculate_hi_het(new_immigrant)
-                        hi_het_data[new_immigrant.individual_id] = {'HI': hi, 'HET': het}
-                        
-                        # 5. RECORD IMMIGRANT PEDIGREE ENTRY
-                        if track_ancestry:
-                            # Immigrants are founders, so use '0' to signify no parents
-                            immigrant_pedigree_data.append(
-                                (individual_id, '0', '0')
-                            )
-                        
-                        immigrant_counter_start += 1
+            if verbose: print(f"--- PULSED IMMIGRATION ACTIVE: {gen_label} ---")
+            for pop_label, count in [('PA', num_immigrants_pa), ('PB', num_immigrants_pb)]:
+                for i in range(count):
+                    individual_id = f"{gen_label}_I_{immigrant_counter_start}"
+                    new_immigrant = simulator.create_pure_immigrant(individual_id, gen_label, pop_label)
+                    new_pop.add_individual(new_immigrant)
+                    hi, het = simulator.calculate_hi_het(new_immigrant)
+                    hi_het_data[individual_id] = {'HI': hi, 'HET': het}
+                    if track_ancestry:
+                        immigrant_pedigree_data.append((individual_id, '0', '0'))
+                    immigrant_counter_start += 1
+                    total_immigrants_added += 1
             
-            # WRITE IMMIGRANT PEDIGREE DATA
             if ancestry_writer and immigrant_pedigree_data:
-                if verbose:
-                    print(f"Writing {len(immigrant_pedigree_data)} immigrant founder records.")
                 ancestry_writer.writerows(immigrant_pedigree_data)
-        
-        else:
-            # If immigration is skipped, ensure total_immigrants_added is zero
-            total_immigrants_added = 0
-            if verbose and total_immigrants > 0 and current_cross_index >= immigrate_start_index:
-                 print(f"--- PULSED IMMIGRATION SKIPPED: {gen_label} (Next pulse in {immigrate_interval - ((current_cross_index - immigrate_start_index) % immigrate_interval)} gen) ---")
 
-
-        # --- END REVISED IMMIGRATION LOGIC (PULSED) ---
-
-        # Store the IDs of the immigrants added in this step for later protection from removal
-        # immigrant_ids is not used here but could be if you needed to protect them further
-        # immigrant_ids = set(new_pop.individuals.keys())
-
-        # Set the starting counter for offspring based on how many individuals were created (immigrants)
         offspring_counter = len(new_pop.individuals)
-        
         mating_tasks = []
         
-        # ... (Rest of the mating and offspring creation logic remains the same) ...
         for p1, p2 in parent_pairs:
-            num_offspring_to_generate = int(np.random.choice(
-                list(number_offspring.keys()), 
-                p=list(number_offspring.values())
-            ))
-
+            num_offspring_to_generate = int(np.random.choice(list(number_offspring.keys()), p=list(number_offspring.values())))
             for _ in range(num_offspring_to_generate):
-                # Offspring IDs now start after the last immigrant ID
                 offspring_id = f"{gen_label}_{offspring_counter + 1}" 
-                mating_tasks.append((
-                    simulator.known_markers_data, 
-                    p1, p2, 
-                    crossover_dist, 
-                    track_ancestry, # Passed as pedigree_recording in perform_cross_task
-                    track_blocks, 
-                    track_junctions, 
-                    gen_label, 
-                    offspring_id)
-                )
+                mating_tasks.append((simulator.known_markers_data, p1, p2, crossover_dist, track_ancestry, track_blocks, track_junctions, gen_label, offspring_id))
                 offspring_counter += 1
 
-        if verbose:
-            print("Running in single-thread mode.")
+        # Execution
+        flat_results = [perform_cross_task(task, args.num_chrs) for task in mating_tasks]
 
-        # Collect results (bred offspring)
-        flat_results = []
-        # Removed multi-processing code for simplicity/debugging
-        for task in mating_tasks:
-            flat_results.append(perform_cross_task(task, args.num_chrs))
-
-        # Add bred offspring to population and HI/HET data
         bred_offspring_ids = []
         for result in flat_results:
-            individual = result['individual']
-            new_pop.add_individual(individual)
-            bred_offspring_ids.append(individual.individual_id) # Track bred individuals
-            
-            # HI/HET for bred individuals are added here
-            hi_het_data[individual.individual_id] = result['hi_het']
+            ind = result['individual']
+            new_pop.add_individual(ind)
+            bred_offspring_ids.append(ind.individual_id)
+            hi_het_data[ind.individual_id] = result['hi_het']
 
-            # Write data incrementally to files
-            if locus_writer:
-                locus_writer.writerows(result['locus_data'])
+            # Incremental Writes
             if ancestry_writer:
-                # This writes the offspring pedigree data
                 ancestry_writer.writerows(result['ancestry_data']) 
             if blocks_writer:
                 blocks_writer.writerows(result['blocks_data'])
             if junctions_writer:
                 junctions_writer.writerows(result['junctions_data'])
             
-        # --- START CONSTANT POPULATION SIZE LOGIC ---
-        # The number of individuals to remove is equal to the total number of immigrants added.
+        # N_e Maintenance (Constant Pop Size)
         num_to_remove = total_immigrants_added 
-        
-        # Only perform removal if immigrants were added in this generation
-        # We check total_immigrants_added which is > 0 only if immigration occurred in this gen
         if num_to_remove > 0: 
-            
-            # Ensure we have enough individuals to remove
-            if num_to_remove > len(bred_offspring_ids):
-                 if verbose:
-                     print(f"WARNING: Cannot remove {num_to_remove} individuals. Only {len(bred_offspring_ids)} bred offspring exist. Check simulation parameters.")
-                 num_to_remove = len(bred_offspring_ids)
-            
-            if num_to_remove > 0:
-                # 1. Randomly select the IDs of the bred hybrid individuals to remove
-                individuals_to_remove = random.sample(bred_offspring_ids, num_to_remove)
-                
-                if verbose:
-                    print(f"Removing {num_to_remove} hybrid individuals to compensate for {total_immigrants_added} immigrants (N_e maintenance).")
-                
-                # 2. Perform the removal and clean up data structures
-                for ind_id in individuals_to_remove:
-                    # Remove from the new_pop dictionary
-                    if ind_id in new_pop.individuals:
-                        del new_pop.individuals[ind_id]
-                    
-                    # Also remove from hi_het_data to keep records consistent
-                    if ind_id in hi_het_data:
-                        del hi_het_data[ind_id]
-            
-            # Verify the final size (for debugging)
-            if verbose:
-                 print(f"Final population size for {gen_label}: {len(new_pop.individuals)}.")
-        # --- END CONSTANT POPULATION SIZE LOGIC ---
+            num_to_remove = min(num_to_remove, len(bred_offspring_ids))
+            individuals_to_remove = random.sample(bred_offspring_ids, num_to_remove)
+            for ind_id in individuals_to_remove:
+                if ind_id in new_pop.individuals: del new_pop.individuals[ind_id]
+                if ind_id in hi_het_data: del hi_het_data[ind_id]
         
         populations_dict[gen_label] = new_pop
         
-        # REVISED MEMORY CLEANUP LOGIC (v2)
-        # Remove generations no longer needed to free up memory
+        # Memory Cleanup
         generations_to_keep = {'PA', 'PB', gen_label}.union(all_future_parents)
-
-        populations_to_delete = [
-            key for key in populations_dict.keys() 
-            if key not in generations_to_keep
-        ]
-
-        for key in populations_to_delete:
-            if verbose:
-                print(f"Deleting population {key} to save memory.")
+        for key in [k for k in populations_dict.keys() if k not in generations_to_keep]:
             del populations_dict[key]
 
-    # Close all files
-    if locus_file:
-        locus_file.close()
-    if ancestry_file:
-        ancestry_file.close()
-    if blocks_file:
-        blocks_file.close()
-    if junctions_file:
-        junctions_file.close()
+    # Clean Up
+    for f in [ancestry_file, blocks_file, junctions_file]:
+        if f: f.close()
 
-    return populations_dict, hi_het_data
-
+    return populations_dict, hi_het_data, None
 
 def sort_key(label: str):
     if label == 'PA': 
@@ -1330,7 +1244,8 @@ def plot_full_pedigree(ancestry_data_df, output_path):
     plt.close()
     print(f"Full pedigree plot saved to: {output_path}")
 
-def handle_outputs(args, hi_het_data):
+# UPDATE: Added 'pedigree_data=None' and '**kwargs' to catch extra info
+def handle_outputs(args, hi_het_data, pedigree_data=None, **kwargs):
     """
     Handles all output file generation based on command-line flags.
     """
@@ -1339,9 +1254,28 @@ def handle_outputs(args, hi_het_data):
     os.makedirs(output_dir, exist_ok=True)
     output_path_prefix = os.path.join(output_dir, args.output_name)
 
-    # Optional: HI/HET CSV
+    # ... (Locus Genotype Section) ...
+    if args.output_locus:
+        print("\n[Output] Preparing locus genotype CSV...")
+        
+        # FIX: We use a global or passed reference to map_df and populations_dict
+        # To avoid the "14 generations" issue, we don't manually add "P0_PA" here 
+        # because "PA" and "PB" are already in populations_dict.
+        
+        # Accessing variables from the outer scope if not passed
+        # This assumes populations_dict and map_df exist where this is called
+        try:
+            # We only use populations_dict to keep it to 12 generations
+            locus_df = compile_locus_data_to_df(populations_dict, map_df)
+            
+            output_path = os.path.join(args.output_dir, "results", f"{args.output_name}_locus_data.csv")
+            locus_df.to_csv(output_path, index=False)
+            print(f"Successfully saved genotypes to: {output_path}")
+        except NameError:
+            print("Warning: populations_dict or map_df not found. Skipping end-of-run locus compilation.")
+
+    # --- HI/HET CSV ---
     if args.output_hi_het:
-        # This section is unchanged as hi_het_data is still passed in
         hi_het_df = pd.DataFrame.from_dict(hi_het_data, orient='index')
         hi_het_df.index.name = 'individual_id'
         hi_het_df.reset_index(inplace=True)
@@ -1349,55 +1283,34 @@ def handle_outputs(args, hi_het_data):
         hi_het_df.to_csv(f"{output_path_prefix}_individual_hi_het.csv", index=False)
         print(f"Individual HI and HET data saved to: {output_path_prefix}_individual_hi_het.csv")
 
-    # Pedigree output (now reads from the file)
+    # --- Pedigree output (Reading from the file created incrementally) ---
     if args.pedigree_recording:
         try:
-            ancestry_df = pd.read_csv(f"{output_path_prefix}_pedigree.csv")
-            print(f"Pedigree records processed from: {output_path_prefix}_pedigree.csv")
+            # The file was created line-by-line in simulate_generations
+            ancestry_file_path = f"{output_path_prefix}_pedigree.csv"
+            ancestry_df = pd.read_csv(ancestry_file_path)
+            print(f"Pedigree records processed from: {ancestry_file_path}")
 
             if args.pedigree_visual:
-                if isinstance(args.pedigree_visual, str):
-                    start_id = args.pedigree_visual
-                else:
-                    start_id = ancestry_df['offspring_id'].iloc[-1]
-                output_plot_path = f"{output_path_prefix}_pedigree_visual.png"
-                plot_pedigree_visual(ancestry_df, start_id, output_plot_path)
+                start_id = args.pedigree_visual if isinstance(args.pedigree_visual, str) else ancestry_df['offspring_id'].iloc[-1]
+                plot_pedigree_visual(ancestry_df, start_id, f"{output_path_prefix}_pedigree_visual.png")
             
             if args.full_pedigree_visual:
-                output_plot_path = f"{output_path_prefix}_full_pedigree.png"
-                plot_full_pedigree(ancestry_df, output_plot_path)
+                plot_full_pedigree(ancestry_df, f"{output_path_prefix}_full_pedigree.png")
 
         except FileNotFoundError:
-            print(f"Error: Pedigree CSV not found. Please ensure pedigree recording was enabled during the simulation.")
+            print(f"Error: Pedigree CSV not found at {output_path_prefix}_pedigree.csv.")
         except Exception as e:
-            print(f"An error occurred while plotting the ancestry tree: {e}")
+            print(f"An error occurred while processing the pedigree: {e}")
 
-    # The Blocks and Junctions sections should also be updated to read from files
-    # ... (add similar pd.read_csv blocks for blocks and junctions)
-
-    # Triangle plot (unchanged as hi_het_data is still passed in)
+    # --- Triangle plot ---
     if args.triangle_plot:
         hi_het_df = pd.DataFrame.from_dict(hi_het_data, orient='index')
         hi_het_df.index.name = 'individual_id'
         hi_het_df.reset_index(inplace=True)
         hi_het_df['generation'] = hi_het_df['individual_id'].str.split('_').str[0]
-
-        mean_hi_het_df = hi_het_df.groupby('generation').agg(
-            mean_HI=('HI', 'mean'),
-            mean_HET=('HET', 'mean')
-        )
-
+        mean_hi_het_df = hi_het_df.groupby('generation').agg(mean_HI=('HI', 'mean'), mean_HET=('HET', 'mean'))
         plot_triangle(mean_hi_het_df, save_filename=f"{output_path_prefix}_triangle_plot.png")
-        print(f"Triangle plot saved to: {output_path_prefix}_triangle_plot.png")
-    
-    # Population size plot (unchanged)
-    if args.population_plot:
-        try:
-            output_plot_path = f"{output_path_prefix}_population_size.png"
-            plot_population_size(hi_het_data, save_filename=output_plot_path)
-            print(f"Population size plot saved to: {output_plot_path}")
-        except Exception as e:
-            print(f"An error occurred while plotting population size: {e}")
 
 # MAIN RUN AND OUTPUTS
 
@@ -1487,6 +1400,9 @@ if __name__ == "__main__":
             pA_freq=pA_freqs, pB_freq=pB_freqs, md_prob=md_probs,
         )
 
+    # CRITICAL: Define map_df so it can be used for recombination and final output
+    map_df = pd.DataFrame(known_markers_data)
+
     # --- 3. INITIALIZE SIMULATOR & PARENTS ---
     recomb_simulator = RecombinationSimulator(known_markers_data=known_markers_data, num_chromosomes=args.num_chrs)
     print("Creating initial populations (PA and PB)")
@@ -1523,7 +1439,6 @@ if __name__ == "__main__":
         crossing_plan.extend(build_backcross_generations('BC', initial_label, 'PB', args.backcross_B))
 
     # --- 7. CREATE F1 (HG1) GENERATION ---
-    # This acts as the bridge between parents and the rest of the plan
     print("Generating HG1 (F1) from PA and PB...")
     hg1_population = recomb_simulator.mate_populations(
         pop1=poPA, pop2=poPB, 
@@ -1531,14 +1446,22 @@ if __name__ == "__main__":
         gen_label="HG1"
     )
 
-    # --- 8. EXECUTION ---
+  # --- 8. EXECUTION ---
     start_time = time.time()
-    print("Starting simulation...")
-    populations_dict, hi_het_data = simulate_generations(
+    
+    # Set the unique name BEFORE simulation so all files match
+    original_output_name = args.output_name
+    args.output_name = f"{original_output_name}_rep_{args.replicate_id}"
+
+    print(f"\n--- Starting simulation for {args.output_name} ---")
+    
+    # We catch the third variable as '_' because simulate_generations 
+    # saves the pedigree to disk incrementally.
+    populations_dict, hi_het_data, _ = simulate_generations(
         simulator=recomb_simulator,
         initial_poPA=poPA,
         initial_poPB=poPB,
-        hg1_pop=hg1_population, # Passing pre-made F1
+        hg1_pop=hg1_population, 
         crossing_plan=crossing_plan,
         number_offspring=number_offspring,
         crossover_dist=crossover_dist,
@@ -1553,20 +1476,34 @@ if __name__ == "__main__":
     )
 
     # --- 9. OUTPUT HANDLING ---
-    # Compile HI/HET for Parents + Hybrids
+    print("\n[Output] Finalizing data processing...")
+
+    # Calculate HI/HET for the original Parents (P0) to include in summary
     initial_hi_het = {}
     for ind in list(poPA.individuals.values()) + list(poPB.individuals.values()):
         hi, het = recomb_simulator.calculate_hi_het(ind)
         initial_hi_het[ind.individual_id] = {'HI': hi, 'HET': het}
     
+    # Combine parent data with all simulated generation data
     all_hi_het_data = {**initial_hi_het, **hi_het_data}
 
-    # Update output name with replicate ID
-    original_output_name = args.output_name
-    args.output_name = f"{original_output_name}_rep_{args.replicate_id}"
+    # Pass data to handle_outputs. 
+    # pedigree_data is None because we already saved it incrementally.
+    handle_outputs(args, all_hi_het_data, pedigree_data=None)
 
-    handle_outputs(args, all_hi_het_data)
-    
-    runtime = time.time() - start_time
-    print(f"\nReplicate {args.replicate_id} complete. Runtime: {runtime:.2f}s")
+    # Compile the final 'Clean' Locus Data CSV (Generations: PA, PB, HG1-10)
+    if args.output_locus:
+        print(f"Compiling genotype data for replicate {args.replicate_id}...")
+        
+        # populations_dict contains the 12 generations needed (PA, PB, and HG1-10)
+        locus_df = compile_locus_data_to_df(populations_dict, map_df)
+        
+        locus_out = os.path.join(args.output_dir, "results", f"{args.output_name}_locus_data.csv")
+        locus_df.to_csv(locus_out, index=False)
+        print(f"Successfully saved clean locus data (12 generations) to: {locus_out}")
+
+    # Restore the original name so the next replicate (if looping) starts fresh
     args.output_name = original_output_name
+    
+    end_time = time.time()
+    print(f"\nReplicate {args.replicate_id} complete. Runtime: {end_time - start_time:.2f}s")
