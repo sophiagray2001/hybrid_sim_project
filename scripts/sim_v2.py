@@ -378,86 +378,59 @@ class RecombinationSimulator:
 
         return blocks
     
- # ================================================================
+    # ================================================================
     # FITNESS FUNCTIONALITY
     # ================================================================
 
-    # ADD THIS NEW METHOD HERE:
-    def calculate_fitness(self, individual, fitness_model, selection_params):
+    def calculate_fitness(self, individual, selection_params):
         """
-        Calculates fitness for an individual based on the specified model.
+        Calculates fitness based on heterozygote disadvantage at SELECTED loci only.
+        
+        Args:
+            individual: Individual object
+            selection_params: dict - parameters for the fitness model
+                - w_homo: fitness of homozygotes (default 1.0)
+                - w_het: fitness of heterozygotes (default 0.6)
+            
+        Returns:
+            float: fitness value
         """
-        # 1. Base Case: Neutral Selection
-        if fitness_model == 'neutral':
+        w_homo = selection_params.get('w_homo', 1.0)
+        w_het = selection_params.get('w_het', 0.0)
+        
+        # Start with base fitness
+        fitness = 1.0
+        
+        # Count heterozygous loci ONLY at selected markers
+        total_selected = 0
+        het_at_selected = 0
+        
+        for chrom, markers in self.chromosome_structure.items():
+            hapA, hapB = individual.genome.chromosomes[chrom]
+            
+            for i, marker in enumerate(markers):
+                # Only consider markers where 'selected' = 1
+                if marker.get('selected', 0) == 1:
+                    total_selected += 1
+                    if hapA[i] != hapB[i]:  # Heterozygous at this locus
+                        het_at_selected += 1
+        
+        # Calculate fitness based on proportion of selected loci that are heterozygous
+        if total_selected > 0:
+            het_proportion = het_at_selected / total_selected
+            # Linear interpolation between homozygote and heterozygote fitness
+            fitness = w_homo - (w_homo - w_het) * het_proportion
+        else:
+            # No selected loci - neutral fitness
             fitness = 1.0
         
-        # 2. Additive Model
-        elif fitness_model == 'additive':
-            hi, het = self.calculate_hi_het(individual)
-            w_AA = selection_params.get('w_AA', 1.0)
-            w_AB = selection_params.get('w_AB', 0.9)
-            w_BB = selection_params.get('w_BB', 0.8)
-            fitness = w_BB + (w_AA - w_BB) * hi
-        
-        # 3. Dominance Model
-        elif fitness_model == 'dominance':
-            hi, het = self.calculate_hi_het(individual)
-            w_AA = selection_params.get('w_AA', 1.0)
-            w_AB = selection_params.get('w_AB', 1.0)
-            w_BB = selection_params.get('w_BB', 0.5)
-            if hi > 0.9:
-                fitness = w_AA
-            elif hi < 0.1:
-                fitness = w_BB
-            else:
-                fitness = w_AB
-        
-        # 4. Heterozygote Advantage
-        elif fitness_model == 'heterozygote_advantage':
-            hi, het = self.calculate_hi_het(individual)
-            w_AA = selection_params.get('w_AA', 0.8)
-            w_AB = selection_params.get('w_AB', 1.0)
-            w_BB = selection_params.get('w_BB', 0.8)
-            fitness = w_BB + (w_AB - w_BB) * het
-
-        # 5. Environmental Model (Refined)
-        elif fitness_model == 'environmental':
-            hi, het = self.calculate_hi_het(individual)
-            
-            environment = selection_params.get('environment', 'neutral') 
-            w_base = selection_params.get('w_base', 1.0)
-            selection_coefficient = selection_params.get('selection_coefficient', 0.2)
-            
-            if environment == 'PA_favored':
-                # PA alleles (higher HI) increase fitness
-                fitness = w_base + (hi * selection_coefficient)
-            elif environment == 'PB_favored':
-                # PB alleles (lower HI) increase fitness
-                fitness = w_base + ((1 - hi) * selection_coefficient)
-            else:  # neutral
-                fitness = w_base
-            
-            # Internal floor check for this specific model
-            fitness = max(0.0, fitness)
-        
-        # 6. Epistatic Model
-        elif fitness_model == 'epistatic':
-            hi, het = self.calculate_hi_het(individual)
-            w_base = selection_params.get('w_base', 1.0)
-            epistasis_strength = selection_params.get('epistasis_strength', 0.5)
-            fitness = w_base - epistasis_strength * abs(hi - 0.5) * abs(het - 0.5)
-        
-        else:
-            raise ValueError(f"Unknown fitness model: {fitness_model}")
-
-        # --- FINAL VALIDATION & BOUNDS ---
-        # Ensures fitness is within [0.0, 2.0] and handles math errors
+        # Bounds checking
         fitness = max(0.0, min(2.0, fitness))
         
         if np.isnan(fitness) or np.isinf(fitness):
-            print(f"Warning: Invalid fitness for {individual.individual_id}, resetting to 1.0")
+            print(f"Warning: Invalid fitness for {individual.individual_id}, setting to 1.0")
             fitness = 1.0
-            
+        
         return fitness
     
 # HELPER FUNCTIONS
@@ -504,7 +477,8 @@ def create_default_markers(args, n_markers, n_chromosomes, pA_freq, pB_freq, md_
                 'position': position,
                 'allele_freq_A': pA_freq[marker_counter],
                 'allele_freq_B': pB_freq[marker_counter],
-                'md_prob': md_prob[marker_counter]
+                'md_prob': md_prob[marker_counter],
+                'selected': 0  # Default: all markers neutral when using defaults
             }
             known_markers_data.append(marker_data)
             marker_counter += 1
@@ -565,6 +539,17 @@ def read_allele_freq_from_csv(file_path, args):
     if 'md_prob' not in df.columns:
         df['md_prob'] = 0.0
         print("Warning: 'md_prob' column not found. Assuming 0 missing data.")
+    
+    # OPTIONAL 'selected' check
+    if 'selected' not in df.columns:
+        df['selected'] = 0  # Default: all markers are neutral
+        print("Warning: 'selected' column not found. All markers assumed neutral (selected=0).")
+    else:
+        # Validate selected column contains only 0 or 1
+        if not df['selected'].isin([0, 1]).all():
+            raise ValueError("'selected' column must contain only 0 (neutral) or 1 (fitness effect).")
+        num_selected = df['selected'].sum()
+        print(f"Found {num_selected} selected markers (out of {len(df)} total).")
 
     return df.to_dict('records')
 
@@ -900,14 +885,38 @@ def simulate_generations(
     immigrate_start_gen_label, 
     max_processes,
     args,
-    fitness_model='neutral',
+    enable_selection=False,
     selection_params=None,
     selection_strength=1.0,
     track_fitness=False
 ):
     """
     Runs the simulation for the specified generations based on the crossing plan.
+
+    Selection can act at two life-cycle stages:
+    - Parental selection (fitness-weighted parent choice)
+    - Offspring viability selection (probabilistic survival)
+
+    NOTE: If both stages are enabled, selection acts twice per generation.
     """
+
+    # --- SAFETY & SETUP ---
+    selection_params = selection_params or {}
+
+    select_parents = enable_selection and selection_params.get('select_parents', False)
+    select_offspring = enable_selection and selection_params.get('select_offspring', False)
+
+    if enable_selection and not (select_parents or select_offspring):
+        print("WARNING: --selection enabled but no selection stage specified. Running neutral reproduction.")
+
+    if verbose and enable_selection:
+        stages = []
+        if select_parents:
+            stages.append("parental")
+        if select_offspring:
+            stages.append("offspring")
+        print(f"Selection enabled at stages: {', '.join(stages)}")
+
     # Pre-calculate the index where immigration should start
     try:
         all_gen_labels = [cross['generation_label'] for cross in crossing_plan]
@@ -927,19 +936,33 @@ def simulate_generations(
     ancestry_file = open(f"{output_path_prefix}_pedigree.csv", 'w', newline='') if track_ancestry else None
     blocks_file = open(f"{output_path_prefix}_ancestry_blocks.csv", 'w', newline='') if track_blocks else None
     junctions_file = open(f"{output_path_prefix}_ancestry_junctions.csv", 'w', newline='') if track_junctions else None
-    fitness_file = open(f"{output_path_prefix}_fitness.csv", 'w', newline='') if track_fitness else None 
-
+   
     ancestry_writer = csv.writer(ancestry_file) if ancestry_file else None
-    blocks_writer = csv.DictWriter(blocks_file, fieldnames=['individual_id', 'chromosome', 'haplotype', 'start_cm', 'end_cm', 'start_marker_id', 'end_marker_id', 'ancestry']) if blocks_file else None
-    junctions_writer = csv.DictWriter(junctions_file, fieldnames=['individual_id', 'chromosome', 'position', 'event_type', 'generation', 'prev_marker_idx']) if junctions_file else None
-    fitness_writer = csv.writer(fitness_file) if fitness_file else None
-
-    if ancestry_writer: ancestry_writer.writerow(['offspring_id', 'parent1_id', 'parent2_id'])
-    if blocks_writer: blocks_writer.writeheader()
-    if junctions_writer: junctions_writer.writeheader()
-    if fitness_writer: fitness_writer.writerow(['individual_id', 'generation', 'fitness', 'HI', 'HET'])
-        
-    all_future_parents = {cross['parent1_label'] for cross in crossing_plan} | {cross['parent2_label'] for cross in crossing_plan}
+    blocks_writer = csv.DictWriter(
+        blocks_file,
+        fieldnames=[
+            'individual_id', 'chromosome', 'haplotype',
+            'start_cm', 'end_cm',
+            'start_marker_id', 'end_marker_id', 'ancestry'
+        ]
+    ) if blocks_file else None
+    junctions_writer = csv.DictWriter(
+        junctions_file,
+        fieldnames=[
+            'individual_id', 'chromosome', 'position',
+            'event_type', 'generation', 'prev_marker_idx'
+        ]
+    ) if junctions_file else None
+   
+    if ancestry_writer:
+        ancestry_writer.writerow(['offspring_id', 'parent1_id', 'parent2_id'])
+    if blocks_writer:
+        blocks_writer.writeheader()
+    if junctions_writer:
+        junctions_writer.writeheader()
+    
+    all_future_parents = {cross['parent1_label'] for cross in crossing_plan} | \
+                         {cross['parent2_label'] for cross in crossing_plan}
 
     for current_cross_index, cross in enumerate(crossing_plan):
         gen_label = cross['generation_label']
@@ -947,7 +970,8 @@ def simulate_generations(
         parent2_label = cross['parent2_label']
         cross_type = cross['type']
 
-        if verbose: print(f"\n Simulating Generation {gen_label} ({cross_type}) ")
+        if verbose:
+            print(f"\n Simulating Generation {gen_label} ({cross_type}) ")
 
         parent1_pop = populations_dict.get(parent1_label)
         parent2_pop = populations_dict.get(parent2_label)
@@ -958,29 +982,31 @@ def simulate_generations(
         parent_pool_1 = list(parent1_pop.individuals.values())
         parent_pool_2 = list(parent2_pop.individuals.values())
         
+        # --- FITNESS CALCULATION (PARENTS) ---
         fitness_values = {}
-        if fitness_model != 'neutral':
+        if enable_selection:
             for ind in parent_pool_1 + parent_pool_2:
                 if ind.individual_id not in fitness_values:
-                    fitness = simulator.calculate_fitness(ind, fitness_model, selection_params or {})
-                    fitness_values[ind.individual_id] = fitness
-                    if fitness_writer:
-                        hi, het = simulator.calculate_hi_het(ind)
-                        fitness_writer.writerow([ind.individual_id, gen_label, fitness, hi, het])
-        
+                    fitness_values[ind.individual_id] = simulator.calculate_fitness(
+                        ind, selection_params
+                    )
+
+        # --- PARENT PAIRING ---
         parent_pairs = []
         if parent1_label == parent2_label:
             num_pairs = len(parent_pool_1) // 2
             for _ in range(num_pairs):
-                if fitness_model != 'neutral':
-                    p1, p2 = select_parents_by_fitness(parent_pool_1, fitness_values, selection_strength)
+                if select_parents:
+                    p1, p2 = select_parents_by_fitness(
+                        parent_pool_1, fitness_values, selection_strength
+                    )
                 else:
                     p1, p2 = random.sample(parent_pool_1, 2)
                 parent_pairs.append((p1, p2))
         else:
             num_pairs = max(len(parent_pool_1), len(parent_pool_2))
             for _ in range(num_pairs):
-                if fitness_model != 'neutral':
+                if select_parents:
                     weights1 = [fitness_values.get(ind.individual_id, 1.0) for ind in parent_pool_1]
                     weights2 = [fitness_values.get(ind.individual_id, 1.0) for ind in parent_pool_2]
                     p1 = random.choices(parent_pool_1, weights=weights1, k=1)[0]
@@ -992,38 +1018,24 @@ def simulate_generations(
 
         new_pop = Population(gen_label)
 
-        # Pulsed Immigration
-        num_immigrants_pa = getattr(args, 'num_immigrants_pa', 0)
-        num_immigrants_pb = getattr(args, 'num_immigrants_pb', 0)
-        total_immigrants_added = 0
-        immigrant_counter_start = 1
-        
-        perform_immigration = (
-            (num_immigrants_pa + num_immigrants_pb) > 0 and 
-            current_cross_index >= immigrate_start_index and
-            (current_cross_index - immigrate_start_index) % immigrate_interval == 0
-        )
-        
-        if perform_immigration:
-            if verbose: print(f"--- PULSED IMMIGRATION ACTIVE: {gen_label} ---")
-            for pop_label, count in [('PA', num_immigrants_pa), ('PB', num_immigrants_pb)]:
-                for i in range(count):
-                    individual_id = f"{gen_label}_I_{immigrant_counter_start}"
-                    new_immigrant = simulator.create_pure_immigrant(individual_id, gen_label, pop_label)
-                    new_pop.add_individual(new_immigrant)
-                    hi, het = simulator.calculate_hi_het(new_immigrant)
-                    hi_het_data[individual_id] = {'HI': hi, 'HET': het}
-                    if ancestry_writer: ancestry_writer.writerow((individual_id, '0', '0'))
-                    immigrant_counter_start += 1
-                    total_immigrants_added += 1
-
+        # --- OFFSPRING GENERATION ---
         offspring_counter = len(new_pop.individuals)
         mating_tasks = []
         for p1, p2 in parent_pairs:
-            num_to_gen = int(np.random.choice(list(number_offspring.keys()), p=list(number_offspring.values())))
+            num_to_gen = int(np.random.choice(
+                list(number_offspring.keys()),
+                p=list(number_offspring.values())
+            ))
             for _ in range(num_to_gen):
-                offspring_id = f"{gen_label}_{offspring_counter + 1}" 
-                mating_tasks.append((simulator.known_markers_data, p1, p2, crossover_dist, track_ancestry, track_blocks, track_junctions, gen_label, offspring_id))
+                offspring_id = f"{gen_label}_{offspring_counter + 1}"
+                mating_tasks.append(
+                    (
+                        simulator.known_markers_data, p1, p2,
+                        crossover_dist, track_ancestry,
+                        track_blocks, track_junctions,
+                        gen_label, offspring_id
+                    )
+                )
                 offspring_counter += 1
 
         flat_results = [perform_cross_task(task, args.num_chrs) for task in mating_tasks]
@@ -1031,61 +1043,56 @@ def simulate_generations(
 
         for result in flat_results:
             ind = result['individual']
-            
-            # Offspring Fitness & Viability
-            if fitness_model != 'neutral':
-                off_fit = simulator.calculate_fitness(ind, fitness_model, selection_params or {})
-                viability = selection_params.get('viability_selection', False) if selection_params else False
-                if viability and random.random() > off_fit:
+
+            # --- OFFSPRING VIABILITY SELECTION ---
+            if select_offspring:
+                off_fit = simulator.calculate_fitness(ind, selection_params)
+                if random.random() > off_fit:
                     continue
-            else:
-                off_fit = 1.0
 
             new_pop.add_individual(ind)
             bred_offspring_ids.append(ind.individual_id)
             hi_het_data[ind.individual_id] = result['hi_het']
             
-            if fitness_writer:
-                hi, het = simulator.calculate_hi_het(ind)
-                fitness_writer.writerow([ind.individual_id, gen_label, off_fit, hi, het])
+            if ancestry_writer:
+                ancestry_writer.writerows(result['ancestry_data'])
+            if blocks_writer:
+                for b in result['blocks_data']:
+                    blocks_writer.writerow(b)
+            if junctions_writer:
+                for j in result['junctions_data']:
+                    junctions_writer.writerow(j)
 
-            if ancestry_writer: ancestry_writer.writerows(result['ancestry_data']) 
-            if blocks_writer: [blocks_writer.writerow(b) for b in result['blocks_data']]
-            if junctions_writer: [junctions_writer.writerow(j) for j in result['junctions_data']]
-
-        # --- RELEVANCE TO YOUR REQUEST: POPULATION CHECK & MEAN FITNESS ---
+        # --- POPULATION CHECK & FITNESS LOGGING ---
         if len(new_pop.individuals) < 10:
             print(f"WARNING: Population {gen_label} crashed to {len(new_pop.individuals)} individuals.")
             if len(new_pop.individuals) < 2:
                 print(f"ERROR: Population extinct at generation {gen_label}. Stopping simulation.")
                 break
 
-        if fitness_model != 'neutral' and len(new_pop.individuals) > 0:
-            gen_fitness_values = [simulator.calculate_fitness(ind, fitness_model, selection_params or {}) 
-                                 for ind in new_pop.individuals.values()]
+        if enable_selection and track_fitness and len(new_pop.individuals) > 0:
+            gen_fitness_values = [
+                simulator.calculate_fitness(ind, selection_params)
+                for ind in new_pop.individuals.values()
+            ]
             mean_fitness = np.mean(gen_fitness_values)
             if verbose:
                 print(f"  Generation {gen_label}: Mean fitness = {mean_fitness:.3f}, N = {len(new_pop.individuals)}")
 
-        # N_e Maintenance (Constant Pop Size)
-        num_to_remove = min(total_immigrants_added, len(bred_offspring_ids))
-        if num_to_remove > 0: 
-            to_remove = random.sample(bred_offspring_ids, num_to_remove)
-            for rid in to_remove:
-                if rid in new_pop.individuals: del new_pop.individuals[rid]
-                if rid in hi_het_data: del hi_het_data[rid]
-        
         populations_dict[gen_label] = new_pop
         
-        # Memory Cleanup
+        # --- MEMORY CLEANUP ---
         to_keep = {'PA', 'PB', gen_label} | all_future_parents
         for k in list(populations_dict.keys()):
-            if k not in to_keep: del populations_dict[k]
+            if k not in to_keep:
+                del populations_dict[k]
 
-    for f in [ancestry_file, blocks_file, junctions_file, fitness_file]:
-        if f: f.close()
+    for f in [ancestry_file, blocks_file, junctions_file]:
+        if f:
+            f.close()
 
     return populations_dict, hi_het_data, None
+
 
 def sort_key(label: str):
     if label == 'PA': 
@@ -1519,23 +1526,12 @@ if __name__ == "__main__":
 
     # Fitness and Selection
     fitness_group = parser.add_argument_group('Fitness and Selection Parameters')
-    fitness_group.add_argument('--fitness_model', type=str, default='neutral',
-                              choices=['neutral', 'additive', 'dominance', 'heterozygote_advantage', 
-                                      'marker_specific', 'epistatic'],
-                              help="Fitness model to use")
-    fitness_group.add_argument('--selection_strength', type=float, default=1.0,
-                              help="Strength of selection (0=neutral, 1=full selection)")
-    fitness_group.add_argument('--w_AA', type=float, default=1.0, help="Fitness of PA homozygotes")
-    fitness_group.add_argument('--w_AB', type=float, default=0.9, help="Fitness of heterozygotes")
-    fitness_group.add_argument('--w_BB', type=float, default=0.8, help="Fitness of PB homozygotes")
-    fitness_group.add_argument('--viability_selection', action='store_true',
-                              help="Apply viability selection (offspring can die before reproduction)")
-    fitness_group.add_argument('--track_fitness', action='store_true', help="Output fitness values")
-    fitness_group.add_argument('--environment', type=str, default='neutral',
-                              choices=['neutral', 'PA_favored', 'PB_favored'],
-                              help="Environmental context for fitness")
-    fitness_group.add_argument('--selection_coefficient', type=float, default=0.2,
-                              help="Strength of environmental selection")
+    fitness_group.add_argument('--selection', action='store_true',
+                              help="Enable heterozygote disadvantage at selected loci")
+    fitness_group.add_argument('--w_het', type=float, default=0.0,
+                              help="Fitness of heterozygotes at selected loci (homozygotes = 1.0)")
+    fitness_group.add_argument("--select_parents", action="store_true", help="Apply selection during parental sampling (fitness-weighted parent choice)")
+    fitness_group.add_argument("--select_offspring", action="store_true", help="Apply viability selection to offspring based on fitness")
 
     # Tracking and Output
     tracking_group = parser.add_argument_group('Tracking and Output Options')
@@ -1640,10 +1636,11 @@ if __name__ == "__main__":
     
     # Build selection parameters
     selection_params = {
-        'w_AA': args.w_AA,
-        'w_AB': args.w_AB,
-        'w_BB': args.w_BB,
-        'viability_selection': args.viability_selection
+        'w_homo': args.w_homo,
+        'w_het': args.w_het,
+        'viability_selection': args.viability_selection,
+        'select_parents': args.select_parents,
+        'select_offspring': args.select_offspring
     }
     
     populations_dict, hi_het_data, _ = simulate_generations(
@@ -1662,8 +1659,8 @@ if __name__ == "__main__":
         immigrate_start_gen_label=immigrate_start_gen_label,
         max_processes=args.threads,
         args=args,
-        # NEW FITNESS PARAMETERS
-        fitness_model=args.fitness_model,
+        # SIMPLIFIED FITNESS PARAMETERS
+        enable_selection=args.selection,
         selection_params=selection_params,
         selection_strength=args.selection_strength,
         track_fitness=args.track_fitness
