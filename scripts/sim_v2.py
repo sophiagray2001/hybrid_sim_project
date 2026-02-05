@@ -909,6 +909,7 @@ def simulate_generations(
     if enable_selection and not (select_parents or select_offspring):
         print("WARNING: --selection enabled but no selection stage specified. Running neutral reproduction.")
 
+
     if verbose and enable_selection:
         stages = []
         if select_parents:
@@ -1117,101 +1118,166 @@ def sort_key(label: str):
 
     return (5, label)
 
+
 def plot_triangle(
-    mean_hi_het_df: pd.DataFrame, 
-    save_filename: Optional[str] = None
+    mean_hi_het_df: pd.DataFrame | None = None,
+    individual_hi_het_df: pd.DataFrame | None = None,
+    plot_individuals: bool = False,
+    save_filename: str | None = None
 ):
     """
-    Plots the mean Hybrid Index vs. Heterozygosity for each generation.
-    PA, PB, and HG1 use fixed colours; all other generations are assigned distinct colours automatically.
-    This plot visualizes the mean position, which will include the contribution of
-    immigrant individuals if they were used in the calculation of mean_hi_het_df.
+    Plots Hybrid Index vs. Heterozygosity.
+
+    Modes:
+    - plot_individuals=False (default):
+        -> plots generation means only
+
+    - plot_individuals=True:
+        -> plots individual HI/HET points colored by generation
+        -> NO means are plotted
+        -> PA, PB, HG1 always included
     """
+
     fig, ax = plt.subplots(figsize=(10, 8))
-    
-    # --- 1. SETUP AND SORTING ---
-    
+
+    # --- AXIS SETUP ---
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
-    ax.set_xlabel("Mean Hybrid Index (HI)", fontsize=12)
-    ax.set_ylabel("Mean Heterozygosity (HET)", fontsize=12)
+    ax.set_xlabel("Hybrid Index (HI)", fontsize=12)
+    ax.set_ylabel("Heterozygosity (HET)", fontsize=12)
 
-    # Sorting function for generations
-    def sort_key(label: str):
-        if label == 'PA': return (0, label)
-        if label == 'PB': return (1, label)
-        if label == 'HG1': return (2, label)
-        match_f = re.match(r'F(\d+)', label)
-        if match_f: return (3, int(match_f.group(1)))
-        match_bc = re.match(r'BC(\d+)([A-Z]?)', label)
-        if match_bc: return (4, int(match_bc.group(1)), match_bc.group(2))
-        return (5, label)
+    # --- GENERATION SORTING FUNCTION ---
+    def sort_key(label):
+        label = str(label)  # Ensure label is string
 
-    sorted_gen_labels = sorted(mean_hi_het_df.index, key=sort_key)
+        if label == "PA": return (0,)
+        if label == "PB": return (1,)
+        if label == "HG1": return (2,)
 
-    # Pre-assign fixed colours for founders
-    fixed_colors = {
-        "PA": "black",
-        "PB": "gray",
-        "HG1": "purple"
-    }
+        m = re.match(r'HG(\d+)', label)
+        if m: return (3, int(m.group(1)))
 
-    # Make colormap for the remaining generations
-    other_labels = [g for g in sorted_gen_labels if g not in fixed_colors]
-    cmap = plt.colormaps.get("tab20").resampled(len(other_labels))
-    color_map = {gen: cmap(i) for i, gen in enumerate(other_labels)}
+        m = re.match(r'F(\d+)', label)
+        if m: return (4, int(m.group(1)))
 
-    # Merge fixed colours + colormap colours
+        m = re.match(r'BC(\d+)([A-Z]?)', label)
+        if m: return (5, int(m.group(1)), m.group(2))
+
+        return (9, label)
+
+    # --- DETERMINE GENERATIONS ---
+    if plot_individuals:
+        if individual_hi_het_df is None:
+            raise ValueError("individual_hi_het_df must be provided when plot_individuals=True")
+
+        generations_present = list(individual_hi_het_df['generation'].unique())
+        # Always include founders
+        for founder in ["PA", "PB", "HG1"]:
+            if founder not in generations_present:
+                generations_present.insert(0, founder)
+
+        generations = sorted(generations_present, key=sort_key)
+
+    else:
+        if mean_hi_het_df is None:
+            raise ValueError("mean_hi_het_df must be provided when plot_individuals=False")
+
+        generations = sorted(mean_hi_het_df.index.astype(str), key=sort_key)
+
+    # --- COLOR MAP ---
+    fixed_colors = {"PA": "black", "PB": "gray", "HG1": "purple"}
+    other_gens = [g for g in generations if g not in fixed_colors]
+
+    cmap = plt.colormaps.get("tab20").resampled(len(other_gens)) if other_gens else None
+    color_map = {g: cmap(i) for i, g in enumerate(other_gens)} if cmap else {}
     color_map.update(fixed_colors)
 
-    # --- 2. PLOT MEAN POINTS AND LABELS ---
-    
-    for gen_name in sorted_gen_labels:
-        if gen_name in mean_hi_het_df.index:
-            mean_data = mean_hi_het_df.loc[gen_name]
-            
-            if pd.isna(mean_data['mean_HI']) or pd.isna(mean_data['mean_HET']):
-                print(f"Skipping plot for mean {gen_name} due to missing data.")
+    # --- PLOTTING ---
+    if plot_individuals:
+        # INDIVIDUAL MODE
+        for gen in generations:
+            gen_df = individual_hi_het_df[individual_hi_het_df['generation'] == gen]
+            if gen_df.empty:
                 continue
 
-            color = color_map[gen_name]
-            
-            # Plot the large mean point
-            ax.scatter(mean_data['mean_HI'], mean_data['mean_HET'],
-                        color=color, 
-                        s=80,          # Standard size for mean
-                        edgecolors='black', 
-                        linewidth=1.5, 
-                        zorder=3, 
-                        label=gen_name)
-            
-            # Plot the label
-            ax.text(mean_data['mean_HI'] + 0.01, mean_data['mean_HET'] + 0.01, gen_name,
-                    fontsize=9, color=color, ha='left', va='bottom', zorder=4)
+            # Add small jitter to reveal overlapping points
+            jitter_strength = 0.003
+            hi_jitter = np.random.normal(0, jitter_strength, size=len(gen_df))
+            het_jitter = np.random.normal(0, jitter_strength, size=len(gen_df))
 
-    # --- 3. DRAW TRIANGLE AND FINALIZE ---
-    
-    # Plot the triangle edges
+            ax.scatter(
+                gen_df['HI'] + hi_jitter,
+                gen_df['HET'] + het_jitter,
+                color=color_map.get(gen, "blue"),
+                s=12,                 # small points
+                alpha=0.4,            # semi-transparent
+                edgecolors="none",
+                zorder=3,
+                label=gen
+            )
+
+        ax.set_title("Hybrid Index vs. Heterozygosity (Individuals)", fontsize=14)
+        ax.legend(loc="upper right", fontsize=9, title="Generation")
+
+    else:
+        # MEAN MODE
+        for gen in generations:
+            row = mean_hi_het_df.loc[gen]
+
+            if pd.isna(row['mean_HI']) or pd.isna(row['mean_HET']):
+                continue
+
+            ax.scatter(
+                row['mean_HI'],
+                row['mean_HET'],
+                color=color_map.get(gen, "blue"),
+                s=90,
+                edgecolors="black",
+                linewidth=1.4,
+                zorder=3
+            )
+
+            ax.text(
+                row['mean_HI'] + 0.01,
+                row['mean_HET'] + 0.01,
+                gen,
+                fontsize=9,
+                color=color_map.get(gen, "blue"),
+                ha="left",
+                va="bottom",
+                zorder=4
+            )
+
+        ax.set_title("Mean Hybrid Index vs. Heterozygosity", fontsize=14)
+
+    # --- TRIANGLE EDGES ---
     triangle_edges = [
         [(0.0, 0.0), (0.5, 1.0)],
         [(0.5, 1.0), (1.0, 0.0)],
         [(0.0, 0.0), (1.0, 0.0)]
     ]
     for (x0, y0), (x1, y1) in triangle_edges:
-        ax.plot([x0, x1], [y0, y1], linestyle='-', color='gray', linewidth=1.5, alpha=0.7, zorder=0)
+        ax.plot(
+            [x0, x1], [y0, y1],
+            color="gray",
+            linewidth=1.5,
+            alpha=0.7,
+            zorder=1
+        )
 
-    # Final plot settings
+    # --- FINAL TIDY ---
     ax.set_xlim(-0.05, 1.05)
     ax.set_ylim(-0.05, 1.05)
-    ax.set_aspect('equal', adjustable='box')
+    ax.set_aspect("equal", adjustable="box")
     ax.grid(False)
-    ax.set_title("Mean Hybrid Index vs. Heterozygosity", fontsize=14)
 
     if save_filename:
-        plt.savefig(save_filename, bbox_inches='tight')
+        plt.savefig(save_filename, dpi=300, bbox_inches="tight")
         plt.close()
+        print(f"Triangle plot saved to: {save_filename}")
     else:
         plt.show()
+
 
 def plot_population_size(hi_het_data, save_filename=None):
     """
@@ -1418,8 +1484,14 @@ def plot_full_pedigree(ancestry_data_df, output_path):
     plt.close()
     print(f"Full pedigree plot saved to: {output_path}")
 
-# UPDATE: Added 'pedigree_data=None' and '**kwargs' to catch extra info
-def handle_outputs(args, hi_het_data, pedigree_data=None, populations_dict=None, map_df=None, **kwargs):
+def handle_outputs(
+    args,
+    hi_het_data,
+    pedigree_data=None,
+    populations_dict=None,
+    map_df=None,
+    **kwargs
+):
     """
     Handles all output file generation based on command-line flags.
     """
@@ -1428,59 +1500,113 @@ def handle_outputs(args, hi_het_data, pedigree_data=None, populations_dict=None,
     os.makedirs(output_dir, exist_ok=True)
     output_path_prefix = os.path.join(output_dir, args.output_name)
 
-    # Locus Genotype Section - NOW WITH PROPER PARAMETERS
+    # --------------------------------------------------
+    # LOCUS GENOTYPE OUTPUT
+    # --------------------------------------------------
     if args.output_locus and populations_dict is not None and map_df is not None:
         print("\n[Output] Preparing locus genotype CSV...")
         try:
             locus_df = compile_locus_data_to_df(populations_dict, map_df)
-            
-            output_path = os.path.join(args.output_dir, "results", f"{args.output_name}_locus_data.csv")
+            output_path = os.path.join(output_dir, f"{args.output_name}_locus_data.csv")
             locus_df.to_csv(output_path, index=False)
             print(f"Successfully saved genotypes to: {output_path}")
         except Exception as e:
             print(f"Warning: Could not compile locus data. Error: {e}")
 
-    # --- HI/HET CSV ---
-    if args.output_hi_het:
-        hi_het_df = pd.DataFrame.from_dict(hi_het_data, orient='index')
-        hi_het_df.index.name = 'individual_id'
+    # --------------------------------------------------
+    # HI / HET CSV
+    # --------------------------------------------------
+    hi_het_df = None
+    if args.output_hi_het or args.triangle_plot:
+        hi_het_df = pd.DataFrame.from_dict(hi_het_data, orient="index")
+        hi_het_df.index.name = "individual_id"
         hi_het_df.reset_index(inplace=True)
-        hi_het_df['generation'] = hi_het_df['individual_id'].str.split('_').str[0]
-        hi_het_df.to_csv(f"{output_path_prefix}_individual_hi_het.csv", index=False)
-        print(f"Individual HI and HET data saved to: {output_path_prefix}_individual_hi_het.csv")
+        hi_het_df["generation"] = hi_het_df["individual_id"].str.split("_").str[0]
 
-    # --- Pedigree output (Reading from the file created incrementally) ---
+    if args.output_hi_het:
+        hi_het_df.to_csv(
+            f"{output_path_prefix}_individual_hi_het.csv",
+            index=False
+        )
+        print(
+            f"Individual HI and HET data saved to: "
+            f"{output_path_prefix}_individual_hi_het.csv"
+        )
+
+    # --------------------------------------------------
+    # PEDIGREE OUTPUT
+    # --------------------------------------------------
     if args.pedigree_recording:
         try:
-            # The file was created line-by-line in simulate_generations
             ancestry_file_path = f"{output_path_prefix}_pedigree.csv"
             ancestry_df = pd.read_csv(ancestry_file_path)
             print(f"Pedigree records processed from: {ancestry_file_path}")
 
             if args.pedigree_visual:
-                start_id = args.pedigree_visual if isinstance(args.pedigree_visual, str) else ancestry_df['offspring_id'].iloc[-1]
-                plot_pedigree_visual(ancestry_df, start_id, f"{output_path_prefix}_pedigree_visual.png")
-            
+                start_id = (
+                    args.pedigree_visual
+                    if isinstance(args.pedigree_visual, str)
+                    else ancestry_df["offspring_id"].iloc[-1]
+                )
+                plot_pedigree_visual(
+                    ancestry_df,
+                    start_id,
+                    f"{output_path_prefix}_pedigree_visual.png"
+                )
+
             if args.full_pedigree_visual:
-                plot_full_pedigree(ancestry_df, f"{output_path_prefix}_full_pedigree.png")
+                plot_full_pedigree(
+                    ancestry_df,
+                    f"{output_path_prefix}_full_pedigree.png"
+                )
 
         except FileNotFoundError:
-            print(f"Error: Pedigree CSV not found at {output_path_prefix}_pedigree.csv.")
+            print(
+                f"Error: Pedigree CSV not found at "
+                f"{output_path_prefix}_pedigree.csv."
+            )
         except Exception as e:
             print(f"An error occurred while processing the pedigree: {e}")
 
-    # --- Triangle plot ---
+    # --------------------------------------------------
+    # TRIANGLE PLOT
+    # --------------------------------------------------
     if args.triangle_plot:
-        hi_het_df = pd.DataFrame.from_dict(hi_het_data, orient='index')
-        hi_het_df.index.name = 'individual_id'
-        hi_het_df.reset_index(inplace=True)
-        hi_het_df['generation'] = hi_het_df['individual_id'].str.split('_').str[0]
-        mean_hi_het_df = hi_het_df.groupby('generation').agg(mean_HI=('HI', 'mean'), mean_HET=('HET', 'mean'))
-        plot_triangle(mean_hi_het_df, save_filename=f"{output_path_prefix}_triangle_plot.png")
-    
-    # --- Population size plot ---
+
+        if args.plot_individuals:
+            # INDIVIDUAL MODE — NO MEANS
+            plot_triangle(
+                mean_hi_het_df=None,
+                individual_hi_het_df=hi_het_df,
+                plot_individuals=True,
+                save_filename=f"{output_path_prefix}_triangle_plot.png"
+            )
+
+        else:
+            # MEAN MODE (default -tp)
+            mean_hi_het_df = (
+                hi_het_df
+                .groupby("generation")
+                .agg(
+                    mean_HI=("HI", "mean"),
+                    mean_HET=("HET", "mean")
+                )
+            )
+
+            plot_triangle(
+                mean_hi_het_df=mean_hi_het_df,
+                plot_individuals=False,
+                save_filename=f"{output_path_prefix}_triangle_plot.png"
+            )
+
+    # --------------------------------------------------
+    # POPULATION SIZE PLOT
+    # --------------------------------------------------
     if args.population_plot:
-        plot_population_size(hi_het_data, save_filename=f"{output_path_prefix}_population_size.png")
+        plot_population_size(
+            hi_het_data,
+            save_filename=f"{output_path_prefix}_population_size.png"
+        )
 
 # MAIN RUN AND OUTPUTS
 
@@ -1542,6 +1668,7 @@ if __name__ == "__main__":
     tracking_group.add_argument("-tj", "--track_junctions", action="store_true")
     tracking_group.add_argument("-gmap", "--map_generate", action="store_true")
     tracking_group.add_argument("-tp", "--triangle_plot", action="store_true")
+    tracking_group.add_argument("--plot_individuals", action="store_true", help="Plot individual points on triangle plot instead of just means")
     tracking_group.add_argument("-ol", "--output_locus", action="store_true")
     tracking_group.add_argument("-oh", "--output_hi_het", action="store_true")
     tracking_group.add_argument("-pp", "--population_plot", action="store_true")
@@ -1636,9 +1763,7 @@ if __name__ == "__main__":
     
     # Build selection parameters
     selection_params = {
-        'w_homo': args.w_homo,
         'w_het': args.w_het,
-        'viability_selection': args.viability_selection,
         'select_parents': args.select_parents,
         'select_offspring': args.select_offspring
     }
@@ -1662,12 +1787,10 @@ if __name__ == "__main__":
         # SIMPLIFIED FITNESS PARAMETERS
         enable_selection=args.selection,
         selection_params=selection_params,
-        selection_strength=args.selection_strength,
-        track_fitness=args.track_fitness
     )
 
     # --- 9. OUTPUT HANDLING ---
-print("\n[Output] Finalizing data processing...")
+print("\n[Output] Finishing data processing")
 
 # Calculate HI/HET for the original Parents (P0) to include in summary
 initial_hi_het = {}
