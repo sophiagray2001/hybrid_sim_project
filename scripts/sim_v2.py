@@ -419,62 +419,108 @@ class RecombinationSimulator:
 
     def calculate_fitness(self, individual, selection_params=None):
         """
-        Multiplicative fitness based on heterozygosity at selected loci.
-        Homozygotes: fitness = 1
-        Heterozygotes: fitness *= w_het per locus
+        Calculates fitness based on observed heterozygosity at SELECTED loci only.
+        
+        Formula: fitness = 1 - (observed_het × w_het)
+        
+        Where:
+            observed_het = proportion of selected loci that are heterozygous
+            w_het = scaling factor (default 0.5)
+            
+        Example with w_het=0.5:
+            - F1 hybrid (100% het) → fitness = 1 - (1.0 × 0.5) = 0.5
+            - Pure type (0% het) → fitness = 1 - (0.0 × 0.5) = 1.0
+            - 50% het → fitness = 1 - (0.5 × 0.5) = 0.75
+        
+        Args:
+            individual: Individual object
+            selection_params: dict with 'w_het' (scaling factor, default 0.5)
+            
+        Returns:
+            float: fitness value between 0 and 1
         """
-
         selection_params = selection_params or {}
-        w_het = selection_params.get("w_het", 1.0)
-
+        w_het = selection_params.get("w_het", 0.5)
+        
         # Neutral shortcut
-        if w_het == 1.0:
+        if w_het == 0.0:
             return 1.0
-
-        # Precomputed once from map_df:
-        # {chrom_id: [marker_idx, ...]}
-        selected_indices = self.selected_marker_indices
-
-        fitness = 1.0
-
+        
+        # Use precomputed selected marker indices
+        selected_indices = getattr(self, 'selected_marker_indices', {})
+        
+        if not selected_indices:
+            # No selected markers - neutral
+            return 1.0
+        
+        # Count heterozygous loci at selected markers
+        total_selected = 0
+        het_at_selected = 0
+        
         for chrom_id, idx_list in selected_indices.items():
             hap1, hap2 = individual.genome.chromosomes[chrom_id]
-
+            
             for idx in idx_list:
-                if hap1[idx] != hap2[idx]:
-                    fitness *= w_het
-
-                    # Early exit if fitness collapses
-                    if fitness < 1e-12:
-                        return 0.0
-
+                total_selected += 1
+                if hap1[idx] != hap2[idx]:  # Heterozygous
+                    het_at_selected += 1
+        
+        # Calculate observed heterozygosity at selected loci
+        if total_selected > 0:
+            het_obs = het_at_selected / total_selected
+        else:
+            return 1.0
+        
+        # Apply fitness formula
+        fitness = 1.0 - (het_obs * w_het)
+        
+        # Bounds checking
+        fitness = max(0.001, min(1.0, fitness))  # Minimum 0.001 to prevent zeros
+        
+        if np.isnan(fitness) or np.isinf(fitness):
+            print(f"Warning: Invalid fitness for {individual.individual_id}, setting to 1.0")
+            fitness = 1.0
+        
         return fitness
-    def set_selected_markers(self, map_df=None, marker_subset=None):
+    def set_selected_markers(self, map_df):
         """
-        Precompute marker indices under selection.
+        Precompute marker indices under selection from the map DataFrame.
+        Reads the 'selected' column (1 = selected, 0 = neutral).
+        
         Creates:
             self.selected_marker_indices = {chrom_id: [idx, ...]}
+        
+        Args:
+            map_df: pandas DataFrame with 'marker_id', 'chromosome', and 'selected' columns
         """
-
-        selected = {}
-
+        if map_df is None:
+            self.selected_marker_indices = {}
+            return
+        
+        # Get marker IDs where selected=1
+        selected_markers = set(map_df[map_df['selected'] == 1]['marker_id'].tolist())
+        
+        if not selected_markers:
+            print("Warning: No selected markers found (all have selected=0). Running neutral simulation.")
+            self.selected_marker_indices = {}
+            return
+        
+        selected_indices = {}
+        
         for chrom_id, markers in self.chromosome_structure.items():
             if not markers:
                 continue
-
-            # Marker IDs in chromosome order
-            marker_ids = [m["marker_id"] for m in markers]
-
-            if marker_subset is None:
-                idxs = list(range(len(marker_ids)))
-            else:
-                idxs = [i for i, mid in enumerate(marker_ids) if mid in marker_subset]
-
+            
+            # Get indices of selected markers in this chromosome
+            idxs = [i for i, m in enumerate(markers) if m['marker_id'] in selected_markers]
+            
             if idxs:
-                selected[chrom_id] = idxs
-
-        self.selected_marker_indices = selected
-
+                selected_indices[chrom_id] = idxs
+        
+        self.selected_marker_indices = selected_indices
+        
+        total_selected = sum(len(idxs) for idxs in selected_indices.values())
+        print(f"Selection configured: {total_selected} markers under selection across {len(selected_indices)} chromosomes.")
 
 # HELPER FUNCTIONS
 
@@ -839,29 +885,39 @@ def perform_cross_task(task, num_chromosomes):
         'junctions_data': junctions
     }
 
-def select_parents_by_fitness(parent_pool, fitness_values, selection_strength=1.0):
+def select_parents_by_fitness(parent_pool, fitness_values):
     """
-    Select two parents weighted by fitness with adjustable selection strength.
+    Select two parents with probability proportional to fitness.
+    Sampling is WITH REPLACEMENT (same individual can be selected twice).
+    
+    Args:
+        parent_pool: list of Individual objects
+        fitness_values: dict mapping individual_id to fitness value
+        
+    Returns:
+        tuple: (parent1, parent2)
     """
-    import random
-
-    if selection_strength <= 0.0 or not fitness_values:
+    if not fitness_values:
         return random.sample(parent_pool, 2)
-
-    # Build weights
+    
+    # Build fitness weights
     weights = []
     for ind in parent_pool:
-        base_fitness = float(fitness_values.get(ind.individual_id, 1.0))
-        adjusted_fitness = 1.0 + selection_strength * (base_fitness - 1.0)
-        weights.append(max(0.001, adjusted_fitness))  # avoid zero weights
-
-    # Normalize
+        fitness = fitness_values.get(ind.individual_id, 1.0)
+        weights.append(max(0.001, fitness))  # Prevent zero weights
+    
+    # Normalize to probabilities
     total = sum(weights)
-    weights = [w / total for w in weights]
-
-    # Pick two parents (allow selfing)
-    selected = random.choices(parent_pool, weights=weights, k=2)
-    return selected[0], selected[1]
+    if total > 0:
+        probabilities = [w / total for w in weights]
+    else:
+        probabilities = [1.0 / len(weights)] * len(weights)
+    
+    # Select two parents (with replacement)
+    p1 = random.choices(parent_pool, weights=probabilities, k=1)[0]
+    p2 = random.choices(parent_pool, weights=probabilities, k=1)[0]
+    
+    return p1, p2
 
 def simulate_generations(
     simulator,
@@ -880,9 +936,7 @@ def simulate_generations(
     max_processes,
     args,
     enable_selection=False,
-    selection_params=None,
-    selection_strength=1.0,
-    track_fitness=False
+    selection_params=None
 ):
     """
     Runs the simulation for the specified generations based on the crossing plan.
@@ -896,19 +950,10 @@ def simulate_generations(
 
     # --- SAFETY & SETUP ---
     selection_params = selection_params or {}
-    select_parents = enable_selection and bool(selection_params.get('select_parents', False))
-    select_offspring = enable_selection and bool(selection_params.get('select_offspring', False))
-
-    if enable_selection and not (select_parents or select_offspring):
-        print("WARNING: --selection enabled but no selection stage specified. Running neutral reproduction.", file=sys.stderr)
-
+    
     if verbose and enable_selection:
-        stages = []
-        if select_parents:
-            stages.append("parental")
-        if select_offspring:
-            stages.append("offspring")
-        print(f"Selection enabled at stages: {', '.join(stages)}")
+        w_het = selection_params.get('w_het', 0.5)
+        print(f"Selection enabled: w_het = {w_het} (fitness-proportional parent sampling)")
 
     # Pre-calculate the index where immigration should start
     try:
@@ -975,17 +1020,19 @@ def simulate_generations(
         # --- PARENT PAIRING ---
         parent_pairs = []
         if parent1_label == parent2_label:
+            # Selfing population
             num_pairs = max(1, len(parent_pool_1) // 2)
             for _ in range(num_pairs):
-                if select_parents:
-                    p1, p2 = select_parents_by_fitness(parent_pool_1, fitness_values, selection_strength)
+                if enable_selection:
+                    p1, p2 = select_parents_by_fitness(parent_pool_1, fitness_values)
                 else:
                     p1, p2 = random.sample(parent_pool_1, 2)
                 parent_pairs.append((p1, p2))
         else:
+            # Cross between populations
             num_pairs = max(1, max(len(parent_pool_1), len(parent_pool_2)))
             for _ in range(num_pairs):
-                if select_parents:
+                if enable_selection:
                     weights1 = [fitness_values.get(ind.individual_id, 1.0) for ind in parent_pool_1]
                     weights2 = [fitness_values.get(ind.individual_id, 1.0) for ind in parent_pool_2]
                     p1 = random.choices(parent_pool_1, weights=weights1, k=1)[0]
@@ -1015,15 +1062,6 @@ def simulate_generations(
 
         for result in flat_results:
             ind = result['individual']
-            # --- OFFSPRING VIABILITY SELECTION ---
-            if select_offspring:
-                off_fit = simulator.calculate_fitness(ind, selection_params)
-                off_fit = max(0.0, min(1.0, off_fit))
-                if random.random() > off_fit:
-                    if verbose:
-                        print(f"  Offspring {ind.individual_id} removed by viability selection (fitness={off_fit:.3f})")
-                    continue
-
             new_pop.add_individual(ind)
             hi_het_data[ind.individual_id] = result['hi_het']
 
@@ -1043,12 +1081,10 @@ def simulate_generations(
                 print(f"ERROR: Population extinct at generation {gen_label}. Stopping simulation.")
                 break
 
-        if enable_selection and track_fitness and len(new_pop.individuals) > 0:
+        if enable_selection and verbose and len(new_pop.individuals) > 0:
             gen_fitness_values = [simulator.calculate_fitness(ind, selection_params) for ind in new_pop.individuals.values()]
             mean_fitness = np.mean(gen_fitness_values)
-            if verbose:
-                print(f"  Generation {gen_label}: Mean fitness = {mean_fitness:.3f}, N = {len(new_pop.individuals)}")
-
+            print(f"  Generation {gen_label}: Mean fitness = {mean_fitness:.3f}, N = {len(new_pop.individuals)}")
         populations_dict[gen_label] = new_pop
 
         # --- MEMORY CLEANUP ---
@@ -1691,11 +1727,10 @@ if __name__ == "__main__":
     fitness_group = parser.add_argument_group('Fitness and Selection Parameters')
     fitness_group.add_argument('--selection', action='store_true',
                               help="Enable heterozygote disadvantage at selected loci")
-    fitness_group.add_argument('--w_het', type=float, default=0.0,
-                              help="Fitness of heterozygotes at selected loci (homozygotes = 1.0)")
-    fitness_group.add_argument("--select_parents", action="store_true", help="Apply selection during parental sampling (fitness-weighted parent choice)")
-    fitness_group.add_argument("--select_offspring", action="store_true", help="Apply viability selection to offspring based on fitness")
-
+    fitness_group.add_argument('--w_het', type=float, default=0.5,
+                              help="Scaling factor for heterozygosity penalty (default 0.5). "
+                                   "F1 hybrids (100%% het) have fitness = 1 - w_het. "
+                                   "Example: w_het=0.5 means F1 fitness=0.5, w_het=0.8 means F1 fitness=0.2")
     # Tracking and Output
     tracking_group = parser.add_argument_group('Tracking and Output Options')
     tracking_group.add_argument("-pr", "--pedigree_recording", action="store_true")
@@ -1746,18 +1781,16 @@ if __name__ == "__main__":
     # CRITICAL: Define map_df so it can be used for recombination and final output
     map_df = pd.DataFrame(known_markers_data)
 
-    # Build selection parameters
-    selection_params = {
-        'w_het': args.w_het,
-        'select_parents': args.select_parents,
-        'select_offspring': args.select_offspring
-    }
-
     # --- 3. INITIALIZE SIMULATOR & PARENTS ---
     recomb_simulator = RecombinationSimulator(known_markers_data=known_markers_data, num_chromosomes=args.num_chrs)
-    # Configure which markers are under selection
-    recomb_simulator.set_selected_markers(marker_subset=selection_params.get("marker_subset")
-    )
+    
+    # Configure which markers are under selection (reads 'selected' column from map_df)
+    recomb_simulator.set_selected_markers(map_df)
+    
+    # Build selection parameters
+    selection_params = {
+        'w_het': args.w_het
+    }
 
     print("Creating initial populations (PA and PB)")
     poPA = create_initial_populations_integrated(recomb_simulator, args.num_poPA, known_markers_data, 'PA')
