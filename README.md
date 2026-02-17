@@ -376,19 +376,6 @@ python sim.py \
     -oh -tp
 ```
 
-### 6. Replicated runs (bash loop)
-
-```bash
-for i in {1..10}; do
-    python sim.py \
-        -repid $i \
-        -HG 10 \
-        -npa 50 -npb 50 \
-        -oh \
-        -on replicate_run \
-        --seed $((42 + i))
-done
-```
 ## Notes & Caveats
 
 **Mating model:** Within a generation (HG2+), pairs are drawn randomly (or fitness-weighted) from the population pool. Mating is with replacement, the same individual can be selected as both parents.
