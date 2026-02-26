@@ -1160,38 +1160,6 @@ def verify_selection_effects(simulator, populations_dict, map_df, selected_only=
 
         het_summary[gen_label] = np.mean(het_values)
 
-    # Display summary
-    print("\nMean Heterozygosity per generation:")
-    for gen, mean_h in het_summary.items():
-        print(f"  {gen}: {mean_h:.3f}")
-
-    # Simple reduction check
-    # Compare HG2 to last hybrid generation
-
-    hybrid_gens = sorted(
-        [g for g in het_summary if g.startswith("HG")],
-        key=lambda x: int(x[2:])  # numeric sort: HG1, HG2, ...
-    )
-
-    if len(hybrid_gens) >= 3 and "HG2" in hybrid_gens:
-        first_hg = "HG2"
-        last_hg = hybrid_gens[-1]
-
-        if het_summary[last_hg] < het_summary[first_hg]:
-            print(
-                f"\nSelection reduced heterozygosity "
-                f"({first_hg}: {het_summary[first_hg]:.3f} → "
-                f"{last_hg}: {het_summary[last_hg]:.3f})."
-            )
-        else:
-            print(
-                f"\nNo reduction detected between {first_hg} and {last_hg}. "
-                "Check selection strength, number of loci, or recombination rate."
-            )
-    else:
-        print("\nNot enough hybrid generations to assess selection (need HG2+).")
-
-
 def plot_triangle(
     mean_hi_het_df: pd.DataFrame | None = None,
     individual_hi_het_df: pd.DataFrame | None = None,
